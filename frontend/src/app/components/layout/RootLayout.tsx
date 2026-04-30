@@ -1,6 +1,7 @@
 import { Outlet } from 'react-router';
 import { Sidebar } from './Sidebar';
 import { BackendProvider } from '../../context/BackendContext';
+import { SessionHeader } from './SessionHeader';
 
 export function RootLayout() {
   return (
@@ -25,6 +26,7 @@ export function RootLayout() {
             flexDirection: 'column',
           }}
         >
+          <SessionHeader />
           <Outlet />
         </div>
       </div>

@@ -1,230 +1,277 @@
-import { useState } from 'react';
-import { AlertTriangle, CheckCheck, Trash2, Filter, Clock } from 'lucide-react';
-import { useBackend } from '../../context/BackendContext';
-import { generateExplanation } from '../../utils/explainability';
-import { ExplanationPanel } from '../shared/ExplanationPanel';
-import type { AlertEntry } from '../../types';
-
-const severityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
-
-const severityColors: Record<AlertEntry['severity'], { bg: string; border: string; text: string }> = {
-  critical: { bg: 'rgba(239,68,68,0.12)', border: 'rgba(239,68,68,0.4)', text: '#fca5a5' },
-  high:     { bg: 'rgba(239,68,68,0.08)', border: 'rgba(239,68,68,0.3)', text: '#ef4444' },
-  medium:   { bg: 'rgba(249,115,22,0.08)', border: 'rgba(249,115,22,0.3)', text: '#f97316' },
-  low:      { bg: 'rgba(234,179,8,0.08)', border: 'rgba(234,179,8,0.3)', text: '#eab308' },
-};
+import { useEffect, useState } from 'react';
+import { AlertTriangle } from 'lucide-react';
+import { graphIdsApi, type AlertStatus } from '../../utils/api';
 
 export function AlertsPage() {
-  const { alerts, flowLog } = useBackend();
-  const [filterSeverity, setFilterSeverity] = useState<AlertEntry['severity'] | 'all'>('all');
-  const [showAcked, setShowAcked] = useState(false);
-  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [alertStatus, setAlertStatus] = useState<AlertStatus | null>(null);
+  const [acknowledging, setAcknowledging] = useState(false);
+  const [thresholdInput, setThresholdInput] = useState('0.05');
+  const [windowInput, setWindowInput] = useState('300');
 
-  // Stub functions - in real backend these would call API endpoints
-  const acknowledgeAlert = () => {};
-  const acknowledgeAll = () => {};
-  const clearAlerts = () => {};
+  const fetchAlert = async () => {
+    try {
+      const data = await graphIdsApi.getAlertStatus();
+      setAlertStatus(data);
+      if (data.alert_threshold !== null) {
+        setThresholdInput(String(data.alert_threshold));
+      }
+      setWindowInput(String(data.windowed_stats.window_sec));
+    } catch {
+      // Keep current values when polling fails.
+    }
+  };
 
-  const filtered = alerts
-    .filter(a => filterSeverity === 'all' || a.severity === filterSeverity)
-    .filter(a => showAcked || !a.acknowledged)
-    .sort((a, b) => severityOrder[a.severity] - severityOrder[b.severity]);
+  useEffect(() => {
+    void fetchAlert();
+    const interval = setInterval(fetchAlert, 3000);
+    return () => clearInterval(interval);
+  }, []);
 
-  const unackCount = alerts.filter(a => !a.acknowledged).length;
+  const handleAcknowledge = async () => {
+    setAcknowledging(true);
+    try {
+      await graphIdsApi.acknowledgeAlert();
+      await fetchAlert();
+    } finally {
+      setAcknowledging(false);
+    }
+  };
+
+  const handleSetThreshold = async () => {
+    const fpr = parseFloat(thresholdInput);
+    const sec = parseInt(windowInput, 10);
+    if (isNaN(fpr) || fpr < 0 || fpr > 1) return;
+    if (isNaN(sec) || sec < 60) return;
+    await graphIdsApi.setAlertThreshold(fpr, sec);
+    await fetchAlert();
+  };
 
   return (
-    <div style={{
-      flex: 1, display: 'flex', flexDirection: 'column',
-      background: '#0d1117', overflow: 'hidden',
-      fontFamily: 'system-ui, -apple-system, sans-serif',
-    }}>
-      {/* Page header */}
-      <div style={{
-        padding: '14px 20px', borderBottom: '1px solid #21262d', flexShrink: 0,
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <AlertTriangle size={16} color="#f85149" />
-          <span style={{ color: '#e6edf3', fontSize: 14, fontWeight: 700, letterSpacing: '0.06em' }}>
-            ALERTS &amp; INCIDENTS
-          </span>
-          {unackCount > 0 && (
-            <div style={{
-              padding: '2px 8px', borderRadius: 10,
-              background: 'rgba(248,81,73,0.15)', border: '1px solid rgba(248,81,73,0.3)',
-              color: '#f85149', fontSize: 11, fontWeight: 700,
-            }}>
-              {unackCount} unacknowledged
-            </div>
-          )}
-        </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <button
-            onClick={acknowledgeAll}
-            style={btnStyle('#3fb950')}
-          >
-            <CheckCheck size={13} /> ACK ALL
-          </button>
-          <button
-            onClick={clearAlerts}
-            style={btnStyle('#f85149')}
-          >
-            <Trash2 size={13} /> CLEAR
-          </button>
-        </div>
+    <div
+      style={{
+        flex: 1,
+        background: '#0d1117',
+        overflowY: 'auto',
+        padding: 24,
+        color: '#e5e7eb',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 18,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <AlertTriangle size={18} color="#f87171" />
+        <h1 style={{ fontSize: 20, margin: 0 }}>Retraining Alerts</h1>
       </div>
 
-      {/* Filters */}
-      <div style={{
-        padding: '10px 20px', borderBottom: '1px solid #21262d', flexShrink: 0,
-        display: 'flex', alignItems: 'center', gap: 10,
-      }}>
-        <Filter size={13} color="#7d8590" />
-        <span style={{ color: '#7d8590', fontSize: 11, letterSpacing: '0.04em' }}>SEVERITY:</span>
-        {(['all', 'critical', 'high', 'medium', 'low'] as const).map(s => (
+      {alertStatus?.alert_active && (
+        <div
+          style={{
+            border: '1px solid #b91c1c',
+            background: '#2b0b0b',
+            borderRadius: 8,
+            padding: 16,
+            display: 'flex',
+            alignItems: 'flex-start',
+            justifyContent: 'space-between',
+            gap: 16,
+          }}
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <p style={{ color: '#fca5a5', fontWeight: 700, fontSize: 13, margin: 0 }}>
+              ALERT ACTIVE - Human Review Required
+            </p>
+            <p style={{ color: '#fca5a5', fontSize: 12, margin: 0, fontFamily: 'monospace' }}>
+              {alertStatus.message}
+            </p>
+            <p style={{ color: '#9ca3af', fontSize: 12, margin: 0 }}>
+              Triggered at:{' '}
+              {alertStatus.alert_triggered_at
+                ? new Date(alertStatus.alert_triggered_at * 1000).toLocaleTimeString()
+                : '-'}
+              {' | '}Windowed FPR:{' '}
+              {alertStatus.alert_fpr_value !== null
+                ? `${(alertStatus.alert_fpr_value * 100).toFixed(2)}%`
+                : '-'}
+              {' | '}Threshold:{' '}
+              {alertStatus.alert_threshold !== null
+                ? `${(alertStatus.alert_threshold * 100).toFixed(2)}%`
+                : '-'}
+            </p>
+          </div>
           <button
-            key={s}
-            onClick={() => setFilterSeverity(s)}
+            onClick={() => void handleAcknowledge()}
+            disabled={acknowledging}
             style={{
-              padding: '3px 10px', borderRadius: 4, border: 'none', cursor: 'pointer',
-              fontSize: 10, fontWeight: 600, letterSpacing: '0.05em', fontFamily: 'monospace',
-              background: filterSeverity === s
-                ? (s === 'all' ? 'rgba(88,166,255,0.2)' : severityColors[s as AlertEntry['severity']]?.bg ?? 'rgba(88,166,255,0.2)')
-                : 'rgba(255,255,255,0.04)',
-              color: filterSeverity === s
-                ? (s === 'all' ? '#58a6ff' : severityColors[s as AlertEntry['severity']]?.text ?? '#58a6ff')
-                : '#7d8590',
+              padding: '8px 12px',
+              border: '1px solid #dc2626',
+              background: '#b91c1c',
+              borderRadius: 6,
+              color: '#fff',
+              fontSize: 12,
+              fontWeight: 700,
+              cursor: acknowledging ? 'not-allowed' : 'pointer',
+              opacity: acknowledging ? 0.7 : 1,
             }}
           >
-            {s.toUpperCase()}
+            {acknowledging ? 'Acknowledging...' : 'Acknowledge'}
           </button>
-        ))}
-        <div style={{ width: 1, height: 20, background: '#21262d', margin: '0 4px' }} />
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-          <input
-            type="checkbox"
-            checked={showAcked}
-            onChange={e => setShowAcked(e.target.checked)}
-            style={{ accentColor: '#58a6ff' }}
-          />
-          <span style={{ color: '#7d8590', fontSize: 11 }}>Show acknowledged</span>
-        </label>
-      </div>
-
-      {/* Table */}
-      <div style={{ flex: 1, overflowY: 'auto' }}>
-        {/* Table header */}
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: '160px 140px 140px 80px 90px 80px 80px',
-          padding: '8px 20px', borderBottom: '1px solid #21262d',
-          position: 'sticky', top: 0, background: '#0d1117', zIndex: 1,
-        }}>
-          {['TIMESTAMP', 'SOURCE IP', 'DEST IP', 'SCORE', 'SEVERITY', 'STATUS', 'ACTION'].map(h => (
-            <span key={h} style={{ color: '#4d5666', fontSize: 10, letterSpacing: '0.06em', fontWeight: 600 }}>
-              {h}
-            </span>
-          ))}
         </div>
+      )}
 
-        {filtered.length === 0 ? (
-          <div style={{ padding: 40, textAlign: 'center', color: '#4d5666', fontSize: 12 }}>
-            No alerts match the current filters.
-          </div>
-        ) : (
-          filtered.map(alert => {
-            const sc = severityColors[alert.severity];
-            const isExpanded = expandedId === alert.id;
-            const flow = flowLog.find(f => f.id === alert.id);
-            const explanation = flow ? generateExplanation(flow) : null;
-            return (
-              <div key={alert.id}>
-                <div
-                  onClick={() => setExpandedId(isExpanded ? null : alert.id)}
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: '160px 140px 140px 80px 90px 80px 80px',
-                    padding: '8px 20px',
-                    borderBottom: isExpanded ? 'none' : '1px solid rgba(33,38,45,0.6)',
-                    background: isExpanded
-                      ? 'rgba(163,113,247,0.06)'
-                      : alert.acknowledged ? 'transparent' : sc.bg,
-                    alignItems: 'center',
-                    opacity: alert.acknowledged ? 0.5 : 1,
-                    transition: 'all 0.2s',
-                    cursor: explanation ? 'pointer' : 'default',
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                    <Clock size={10} color="#4d5666" />
-                    <span style={{ color: '#7d8590', fontSize: 10, fontFamily: 'monospace' }}>
-                      {alert.timestamp.toLocaleTimeString('en-US', { hour12: false })}
-                    </span>
-                  </div>
-                  <span style={{ color: '#c9d1d9', fontSize: 11, fontFamily: 'monospace' }}>{alert.srcIP}</span>
-                  <span style={{ color: '#c9d1d9', fontSize: 11, fontFamily: 'monospace' }}>{alert.dstIP}</span>
-                  <span style={{ color: sc.text, fontSize: 11, fontFamily: 'monospace', fontWeight: 700 }}>
-                    {alert.score.toFixed(4)}
-                  </span>
-                  <span style={{
-                    display: 'inline-flex', padding: '2px 8px', borderRadius: 3,
-                    background: sc.bg, border: `1px solid ${sc.border}`,
-                    color: sc.text, fontSize: 10, fontWeight: 700, letterSpacing: '0.05em',
-                    width: 'fit-content',
-                  }}>
-                    {alert.severity.toUpperCase()}
-                  </span>
-                  <span style={{ color: alert.acknowledged ? '#3fb950' : '#7d8590', fontSize: 10 }}>
-                    {alert.acknowledged ? '✓ ACK' : 'OPEN'}
-                  </span>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    {!alert.acknowledged && (
-                      <button
-                        onClick={e => { e.stopPropagation(); acknowledgeAlert(alert.id); }}
-                        style={{
-                          padding: '3px 8px', borderRadius: 3,
-                          background: 'rgba(63,185,80,0.1)', border: '1px solid rgba(63,185,80,0.25)',
-                          color: '#3fb950', fontSize: 10, cursor: 'pointer',
-                        }}
-                      >
-                        ACK
-                      </button>
-                    )}
-                    {explanation && (
-                      <span style={{ color: isExpanded ? '#a371f7' : '#4d5666', fontSize: 10 }}>
-                        {isExpanded ? '▲' : '▼'}
-                      </span>
-                    )}
-                  </div>
-                </div>
+      {alertStatus && !alertStatus.alert_active && (
+        <div
+          style={{
+            border: '1px solid #166534',
+            background: '#052e16',
+            borderRadius: 8,
+            padding: 14,
+          }}
+        >
+          <p style={{ color: '#4ade80', fontSize: 13, fontWeight: 700, margin: 0 }}>
+            No active alert - model performance within threshold
+          </p>
+          <p style={{ color: '#9ca3af', fontSize: 12, margin: '6px 0 0 0' }}>
+            Current windowed FPR: {(alertStatus.windowed_fpr * 100).toFixed(2)}%
+          </p>
+        </div>
+      )}
 
-                {/* Expandable explanation row */}
-                {isExpanded && explanation && (
-                  <div style={{
-                    padding: '12px 20px 16px',
-                    background: 'rgba(163,113,247,0.03)',
-                    borderBottom: '1px solid rgba(33,38,45,0.6)',
-                    borderLeft: '2px solid rgba(163,113,247,0.4)',
-                  }}>
-                    <ExplanationPanel explanation={explanation} />
-                  </div>
-                )}
+      {alertStatus?.windowed_stats && (
+        <div style={{ border: '1px solid #374151', background: '#111827', borderRadius: 8, padding: 16 }}>
+          <h2 style={{ fontSize: 14, margin: '0 0 12px 0', color: '#d1d5db' }}>
+            Current Window ({alertStatus.windowed_stats.window_sec}s)
+          </h2>
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
+              gap: 10,
+            }}
+          >
+            {([
+              ['FPR', `${(alertStatus.windowed_stats.fpr * 100).toFixed(2)}%`],
+              ['TPR', `${(alertStatus.windowed_stats.tpr * 100).toFixed(2)}%`],
+              ['Precision', `${(alertStatus.windowed_stats.precision * 100).toFixed(2)}%`],
+              ['F1', alertStatus.windowed_stats.f1.toFixed(4)],
+            ] as [string, string][]).map(([label, value]) => (
+              <div key={label} style={{ background: '#1f2937', borderRadius: 6, padding: 12, textAlign: 'center' }}>
+                <p style={{ color: '#9ca3af', fontSize: 11, margin: 0 }}>{label}</p>
+                <p style={{ color: '#f3f4f6', fontSize: 20, margin: '6px 0 0 0', fontFamily: 'monospace', fontWeight: 700 }}>
+                  {value}
+                </p>
               </div>
-            );
-          })
-        )}
+            ))}
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8, marginTop: 12, maxWidth: 280 }}>
+            {([
+              ['TP', alertStatus.windowed_stats.tp, '#4ade80'],
+              ['FP', alertStatus.windowed_stats.fp, '#f87171'],
+              ['FN', alertStatus.windowed_stats.fn, '#fb923c'],
+              ['TN', alertStatus.windowed_stats.tn, '#60a5fa'],
+            ] as [string, number, string][]).map(([label, value, color]) => (
+              <div key={label} style={{ background: '#1f2937', borderRadius: 6, padding: 8, textAlign: 'center' }}>
+                <span style={{ color: '#9ca3af', fontSize: 11 }}>{label} </span>
+                <span style={{ color, fontFamily: 'monospace', fontWeight: 700, fontSize: 13 }}>{value}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div style={{ border: '1px solid #374151', background: '#111827', borderRadius: 8, padding: 16 }}>
+        <h2 style={{ fontSize: 14, margin: '0 0 10px 0', color: '#d1d5db' }}>Alert Threshold Configuration</h2>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <div>
+            <label style={{ color: '#9ca3af', fontSize: 11, display: 'block', marginBottom: 4 }}>
+              FPR Threshold (0.0 - 1.0)
+            </label>
+            <input
+              type="number"
+              min="0"
+              max="1"
+              step="0.01"
+              value={thresholdInput}
+              onChange={(e) => setThresholdInput(e.target.value)}
+              style={{
+                background: '#1f2937',
+                border: '1px solid #4b5563',
+                color: '#f3f4f6',
+                borderRadius: 6,
+                padding: '6px 10px',
+                width: 130,
+              }}
+            />
+          </div>
+          <div>
+            <label style={{ color: '#9ca3af', fontSize: 11, display: 'block', marginBottom: 4 }}>
+              Window (seconds)
+            </label>
+            <input
+              type="number"
+              min="60"
+              max="3600"
+              step="60"
+              value={windowInput}
+              onChange={(e) => setWindowInput(e.target.value)}
+              style={{
+                background: '#1f2937',
+                border: '1px solid #4b5563',
+                color: '#f3f4f6',
+                borderRadius: 6,
+                padding: '6px 10px',
+                width: 130,
+              }}
+            />
+          </div>
+          <button
+            onClick={() => void handleSetThreshold()}
+            style={{
+              padding: '7px 14px',
+              borderRadius: 6,
+              border: '1px solid #2563eb',
+              background: '#1d4ed8',
+              color: '#fff',
+              fontWeight: 700,
+              fontSize: 12,
+              cursor: 'pointer',
+            }}
+          >
+            Apply
+          </button>
+        </div>
       </div>
+
+      {alertStatus && alertStatus.recent_alerts.length > 0 && (
+        <div style={{ border: '1px solid #374151', background: '#111827', borderRadius: 8, padding: 16 }}>
+          <h2 style={{ fontSize: 14, margin: '0 0 10px 0', color: '#d1d5db' }}>Recent Alert History</h2>
+          <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ color: '#9ca3af', fontSize: 11, borderBottom: '1px solid #374151' }}>
+                <th style={{ textAlign: 'left', paddingBottom: 8 }}>Time</th>
+                <th style={{ textAlign: 'left', paddingBottom: 8 }}>Windowed FPR</th>
+                <th style={{ textAlign: 'left', paddingBottom: 8 }}>Threshold</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...alertStatus.recent_alerts].reverse().map((a) => (
+                <tr key={a.alert_id} style={{ borderBottom: '1px solid #1f2937' }}>
+                  <td style={{ padding: '8px 0', color: '#d1d5db', fontFamily: 'monospace', fontSize: 12 }}>
+                    {new Date(a.triggered_at * 1000).toLocaleTimeString()}
+                  </td>
+                  <td style={{ padding: '8px 0', color: '#f87171', fontFamily: 'monospace' }}>
+                    {(a.windowed_fpr * 100).toFixed(2)}%
+                  </td>
+                  <td style={{ padding: '8px 0', color: '#9ca3af', fontFamily: 'monospace' }}>
+                    {(a.threshold * 100).toFixed(2)}%
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
-}
-
-function btnStyle(color: string) {
-  return {
-    display: 'flex', alignItems: 'center', gap: 5,
-    padding: '5px 12px', borderRadius: 5,
-    background: `${color}18`, border: `1px solid ${color}44`,
-    color, fontSize: 11, fontWeight: 600, cursor: 'pointer',
-    letterSpacing: '0.04em',
-  } as React.CSSProperties;
 }

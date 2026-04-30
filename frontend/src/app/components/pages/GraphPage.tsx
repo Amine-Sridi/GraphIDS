@@ -5,6 +5,9 @@ import {
   ResponsiveContainer, Cell,
 } from 'recharts';
 import { useBackend } from '../../context/BackendContext';
+import { graphIdsApi, type FlowSubgraph } from '../../utils/api';
+
+const THRESHOLD = 0.65;
 
 export function GraphPage() {
   const { flowLog } = useBackend();
@@ -23,9 +26,8 @@ export function GraphPage() {
     [flowLog]
   );
 
-  // Anomalous subgraph: last 80 anomalous flows
-  const anomalousFlows = useMemo(() =>
-    flowLog.filter(f => f.isAnomaly).slice(0, 80),
+  const latestAnomalousFlowId = useMemo(
+    () => flowLog.find((f) => f.isAnomaly && f.score >= THRESHOLD)?.flowId ?? null,
     [flowLog]
   );
 
@@ -69,7 +71,7 @@ export function GraphPage() {
       {activeTab === 'embedding' ? (
         <EmbeddingView data={embData} />
       ) : (
-        <SubgraphView flows={anomalousFlows} />
+        <SubgraphView flowId={latestAnomalousFlowId} />
       )}
     </div>
   );
@@ -153,40 +155,67 @@ function EmbeddingView({ data }: { data: ReturnType<typeof useBackend>['flowLog'
 }
 
 // ─── Anomalous Subgraph (canvas-based) ───────────────────────────────────────
-function SubgraphView({ flows }: { flows: any[] }) {
+function SubgraphView({ flowId }: { flowId: string | null }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [zoom, setZoom] = useState(1);
+  const [subgraph, setSubgraph] = useState<FlowSubgraph | null>(null);
+
+  useEffect(() => {
+    if (!flowId) {
+      setSubgraph(null);
+      return;
+    }
+
+    const load = async () => {
+      try {
+        const data = await graphIdsApi.getSubgraph(flowId);
+        setSubgraph(data);
+      } catch {
+        setSubgraph(null);
+      }
+    };
+
+    void load();
+  }, [flowId]);
 
   const { nodes, edges } = useMemo(() => {
-    const ipMap = new Map<string, { ip: string; connections: number; maxScore: number }>();
-    const edgeList: { src: string; dst: string; score: number }[] = [];
+    if (!subgraph) {
+      return { nodes: [], edges: [] };
+    }
 
-    flows.forEach(f => {
-      if (!ipMap.has(f.srcIP)) ipMap.set(f.srcIP, { ip: f.srcIP, connections: 0, maxScore: 0 });
-      if (!ipMap.has(f.dstIP)) ipMap.set(f.dstIP, { ip: f.dstIP, connections: 0, maxScore: 0 });
-      const src = ipMap.get(f.srcIP)!;
-      const dst = ipMap.get(f.dstIP)!;
-      src.connections++;
-      dst.connections++;
-      src.maxScore = Math.max(src.maxScore, f.score);
-      dst.maxScore = Math.max(dst.maxScore, f.score);
-      edgeList.push({ src: f.srcIP, dst: f.dstIP, score: f.score });
-    });
+    const limitedNodes = subgraph.nodes.slice(0, 20);
+    const nodeSet = new Set(limitedNodes.map((n) => n.id));
+    const limitedEdges = subgraph.edges
+      .filter((e) => nodeSet.has(e.source) && nodeSet.has(e.target))
+      .slice(0, 200);
 
-    const nodeArr = Array.from(ipMap.values());
-    return { nodes: nodeArr, edges: edgeList };
-  }, [flows]);
+    return {
+      nodes: limitedNodes,
+      edges: limitedEdges,
+    };
+  }, [subgraph]);
 
   const nodePositions = useMemo(() => {
     const pos = new Map<string, { x: number; y: number }>();
-    nodes.forEach((n, i) => {
-      const angle = (i / nodes.length) * 2 * Math.PI;
-      const r = 0.3 + (n.connections / 10) * 0.1;
-      pos.set(n.ip, {
-        x: 0.5 + r * Math.cos(angle),
-        y: 0.5 + r * Math.sin(angle),
+    const centerNodes = nodes.filter((n: any) => n.is_center);
+    const outerNodes = nodes.filter((n: any) => !n.is_center);
+
+    centerNodes.forEach((n: any, i: number) => {
+      const angle = (i / Math.max(centerNodes.length, 1)) * 2 * Math.PI;
+      pos.set(n.id, {
+        x: 0.5 + 0.07 * Math.cos(angle),
+        y: 0.5 + 0.07 * Math.sin(angle),
       });
     });
+
+    outerNodes.forEach((n: any, i: number) => {
+      const angle = (i / Math.max(outerNodes.length, 1)) * 2 * Math.PI;
+      pos.set(n.id, {
+        x: 0.5 + 0.33 * Math.cos(angle),
+        y: 0.5 + 0.33 * Math.sin(angle),
+      });
+    });
+
     return pos;
   }, [nodes]);
 
@@ -200,27 +229,24 @@ function SubgraphView({ flows }: { flows: any[] }) {
     ctx.clearRect(0, 0, W, H);
 
     // Draw edges
-    edges.forEach(e => {
-      const sp = nodePositions.get(e.src);
-      const dp = nodePositions.get(e.dst);
+    edges.forEach((e: any) => {
+      const sp = nodePositions.get(e.source);
+      const dp = nodePositions.get(e.target);
       if (!sp || !dp) return;
-      const alpha = 0.15 + e.score * 0.4;
-      const lw = 0.5 + e.score * 2;
       ctx.beginPath();
       ctx.moveTo(sp.x * W, sp.y * H);
       ctx.lineTo(dp.x * W, dp.y * H);
-      ctx.strokeStyle = `rgba(239,68,68,${alpha})`;
-      ctx.lineWidth = lw;
+      ctx.strokeStyle = 'rgba(239,68,68,0.28)';
+      ctx.lineWidth = 1.5;
       ctx.stroke();
     });
 
     // Draw nodes
-    nodes.forEach(n => {
-      const p = nodePositions.get(n.ip);
+    nodes.forEach((n: any) => {
+      const p = nodePositions.get(n.id);
       if (!p) return;
-      const r = 4 + n.connections * 1.5;
-      const intensity = Math.min(1, n.maxScore);
-      const color = `rgba(${Math.round(239 * intensity + 88 * (1 - intensity))},${Math.round(68 * intensity + 166 * (1 - intensity))},${Math.round(68 * intensity + 255 * (1 - intensity))},0.9)`;
+      const r = n.is_center ? 9 : 6;
+      const color = n.is_center ? 'rgba(248,113,113,0.95)' : 'rgba(96,165,250,0.9)';
 
       ctx.beginPath();
       ctx.arc(p.x * W, p.y * H, r, 0, Math.PI * 2);
@@ -230,11 +256,11 @@ function SubgraphView({ flows }: { flows: any[] }) {
       ctx.lineWidth = 1;
       ctx.stroke();
 
-      if (n.connections >= 3) {
+      if (n.is_center) {
         ctx.fillStyle = '#e6edf3';
         ctx.font = '9px monospace';
         ctx.textAlign = 'center';
-        ctx.fillText(n.ip.split('.').slice(0, 2).join('.') + '…', p.x * W, p.y * H - r - 3);
+        ctx.fillText(n.label, p.x * W, p.y * H - r - 4);
       }
     });
   }, [nodes, edges, nodePositions, zoom]);
@@ -253,6 +279,11 @@ function SubgraphView({ flows }: { flows: any[] }) {
       </div>
 
       <div style={{ flex: 1, minHeight: 0, position: 'relative', border: '1px solid #21262d', borderRadius: 8, overflow: 'hidden' }}>
+        {!flowId && (
+          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#6b7280', fontSize: 12 }}>
+            Waiting for anomalous flow data...
+          </div>
+        )}
         <canvas
           ref={canvasRef}
           width={800}

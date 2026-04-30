@@ -5,6 +5,13 @@
 
 import type { DataPoint, AlertEntry } from '../types';
 
+export interface TimelinePoint {
+  timestamp: number;
+  score: number;
+  label: number;
+  severity: 'critical' | 'high' | 'medium' | 'low';
+}
+
 // ─── Types ──────────────────────────────────────────────────────────────────
 export interface ClassificationResult {
   flow_id: string;
@@ -15,9 +22,15 @@ export interface ClassificationResult {
   dst_port: number;
   score: number;             // 0.0 - 1.0
   label: number;             // 0=benign, 1=anomalous
+  severity: 'critical' | 'high' | 'medium' | 'low';
   confidence: number;        // 0.0 - 1.0
   window_id: number;
   processing_time_ms: number;
+  ground_truth_label?: number | null;
+  protocol?: number;
+  bytes?: number;
+  packets?: number;
+  duration_ms?: number;
 }
 
 export interface DashboardStats {
@@ -30,6 +43,63 @@ export interface DashboardStats {
   uptime_seconds: number;
   node_count: number;
   buffer_size: number;
+  // Performance metrics (FPR monitoring)
+  true_positives: number;
+  false_positives: number;
+  true_negatives: number;
+  false_negatives: number;
+  fpr: number;  // False Positive Rate
+  tpr: number;  // True Positive Rate
+  precision: number;
+  f1_score: number;
+  retraining_threshold_fpr?: number;
+  should_retrain: boolean;
+  windowed_fpr: number;
+  windowed_tpr: number;
+  windowed_precision: number;
+  windowed_f1: number;
+  windowed_window_sec: number;
+  windowed_event_count: number;
+  alert_active: boolean;
+  alert_triggered_at: number | null;
+  alert_fpr_value: number | null;
+  alert_threshold: number | null;
+}
+
+export interface AlertStatus {
+  alert_active: boolean;
+  alert_triggered_at: number | null;
+  alert_fpr_value: number | null;
+  alert_threshold: number | null;
+  windowed_fpr: number;
+  windowed_stats: {
+    window_sec: number;
+    window_event_count: number;
+    tp: number;
+    fp: number;
+    tn: number;
+    fn: number;
+    fpr: number;
+    tpr: number;
+    precision: number;
+    f1: number;
+  };
+  message: string | null;
+  recent_alerts: Array<{
+    alert_id: string;
+    triggered_at: number;
+    windowed_fpr: number;
+    threshold: number;
+  }>;
+}
+
+export interface FlowSubgraph {
+  flow_id: string;
+  center_ips: string[];
+  nodes: Array<{ id: string; label: string; hop: number; is_center?: boolean }>;
+  edges: Array<{ source: string; target: string; ground_truth?: number | null }>;
+  node_count: number;
+  edge_count: number;
 }
 
 export interface HealthResponse {
@@ -37,6 +107,12 @@ export interface HealthResponse {
   timestamp: number;
   uptime: number;
   message?: string;
+}
+
+export interface StreamControlState {
+  is_active: boolean;
+  ingestion_rate: number;
+  updated_at: number;
 }
 
 // ─── API Client ─────────────────────────────────────────────────────────────
@@ -89,24 +165,32 @@ function transformToDataPoint(result: ClassificationResult): DataPoint {
  */
 function transformToAlertEntry(result: ClassificationResult): AlertEntry {
   const date = new Date(result.timestamp * 1000);
-  const score = result.score;
-
-  // Determine severity based on score
-  let severity: AlertEntry['severity'];
-  if (score >= 0.95) severity = 'critical';
-  else if (score >= 0.85) severity = 'high';
-  else if (score >= 0.75) severity = 'medium';
-  else severity = 'low';
+  const id = flowIdToNumeric(result.flow_id, 0);
 
   return {
-    id: parseInt(result.flow_id.split('_')[1] || '0', 10),
+    id,
     timestamp: date,
     srcIP: result.src_ip,
     dstIP: result.dst_ip,
     score: result.score,
-    severity,
+    severity: result.severity,
     acknowledged: false,
   };
+}
+
+function flowIdToNumeric(flowId: string, fallback: number): number {
+  const parsed = parseInt(flowId, 10);
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return parsed;
+  }
+
+  let hash = 0;
+  for (let i = 0; i < flowId.length; i += 1) {
+    hash = ((hash << 5) - hash + flowId.charCodeAt(i)) | 0;
+  }
+
+  const value = Math.abs(hash);
+  return value > 0 ? value : fallback;
 }
 
 // ─── Public API Methods ──────────────────────────────────────────────────────
@@ -191,6 +275,138 @@ export const graphIdsApi = {
       console.error('Error getting anomalies:', error);
       throw error;
     }
+  },
+
+  async getAlertStatus(): Promise<AlertStatus> {
+    const response = await fetchWithTimeout(`${API_BASE_URL}/alert`);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch alert status: ${response.status}`);
+    }
+    return response.json();
+  },
+
+  async acknowledgeAlert(): Promise<{ status: string; message: string }> {
+    const response = await fetchWithTimeout(`${API_BASE_URL}/alert/acknowledge`, {
+      method: 'POST',
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to acknowledge alert: ${response.status}`);
+    }
+    return response.json();
+  },
+
+  async setAlertThreshold(thresholdFpr: number, windowSec = 300): Promise<void> {
+    const response = await fetchWithTimeout(
+      `${API_BASE_URL}/alert/threshold?threshold_fpr=${thresholdFpr}&window_sec=${windowSec}`,
+      { method: 'POST' }
+    );
+    if (!response.ok) {
+      throw new Error(`Failed to set alert threshold: ${response.status}`);
+    }
+  },
+
+  async getTimelineData(limit = 200): Promise<TimelinePoint[]> {
+    const events = await this.getEvents(limit);
+    return events.map((e) => ({
+      timestamp: e.timestamp,
+      score: e.score,
+      label: e.label,
+      severity: e.severity,
+    }));
+  },
+
+  async getSubgraph(flowId: string): Promise<FlowSubgraph> {
+    const response = await fetchWithTimeout(`${API_BASE_URL}/subgraph/${flowId}`);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch subgraph for flow ${flowId}: ${response.status}`);
+    }
+    return response.json();
+  },
+
+  /**
+   * Set the FPR (False Positive Rate) threshold for retraining
+   */
+  async setRetrainingThreshold(thresholdFpr: number): Promise<any> {
+    try {
+      const response = await fetchWithTimeout(
+        `${API_BASE_URL}/retraining-threshold?threshold_fpr=${thresholdFpr}`,
+        { method: 'POST' }
+      );
+      if (!response.ok) {
+        throw new Error(`Failed to set retraining threshold: ${response.status}`);
+      }
+      return await response.json();
+    } catch (error) {
+      console.error('Error setting retraining threshold:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Get the current FPR retraining threshold
+   */
+  async getRetrainingThreshold(): Promise<any> {
+    try {
+      const response = await fetchWithTimeout(`${API_BASE_URL}/retraining-threshold`);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch retraining threshold: ${response.status}`);
+      }
+      return await response.json();
+    } catch (error) {
+      console.error('Error fetching retraining threshold:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Get current stream control state (active/rate)
+   */
+  async getStreamControl(): Promise<StreamControlState> {
+    try {
+      const response = await fetchWithTimeout(`${API_BASE_URL}/stream-control`);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch stream control: ${response.status}`);
+      }
+      return await response.json();
+    } catch (error) {
+      console.error('Error fetching stream control:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Update stream control state
+   */
+  async updateStreamControl(params: { is_active?: boolean; ingestion_rate?: number }): Promise<StreamControlState> {
+    try {
+      const searchParams = new URLSearchParams();
+      if (typeof params.is_active === 'boolean') {
+        searchParams.set('is_active', String(params.is_active));
+      }
+      if (typeof params.ingestion_rate === 'number') {
+        searchParams.set('ingestion_rate', String(params.ingestion_rate));
+      }
+
+      const response = await fetchWithTimeout(
+        `${API_BASE_URL}/stream-control?${searchParams.toString()}`,
+        { method: 'POST' }
+      );
+      if (!response.ok) {
+        throw new Error(`Failed to update stream control: ${response.status}`);
+      }
+      return await response.json();
+    } catch (error) {
+      console.error('Error updating stream control:', error);
+      throw error;
+    }
+  },
+
+  async resetStats(): Promise<{ status: string; message: string }> {
+    const response = await fetchWithTimeout(`${API_BASE_URL}/reset`, { method: 'POST' });
+    if (!response.ok) {
+      throw new Error(`Failed to reset stats: ${response.status}`);
+    }
+    return response.json();
   },
 };
 

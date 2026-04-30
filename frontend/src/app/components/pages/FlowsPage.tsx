@@ -7,6 +7,7 @@ import { ExplanationPanel } from '../shared/ExplanationPanel';
 import type { FlowEntry } from '../../types';
 
 const PAGE_SIZE = 20;
+type FlowFilter = 'all' | 'anomalous' | 'benign' | 'false_positives';
 
 type SortKey = 'timestamp' | 'score' | 'byteCount' | 'packetCount' | 'duration';
 type SortDir = 'asc' | 'desc';
@@ -19,20 +20,52 @@ const protocolColors: Record<string, string> = {
 export function FlowsPage() {
   const { flowLog } = useBackend();
   const [search, setSearch] = useState('');
+  const [activeFilter, setActiveFilter] = useState<FlowFilter>('all');
   const [sortKey, setSortKey] = useState<SortKey>('timestamp');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<FlowEntry | null>(null);
 
-  const filtered = useMemo(() => {
+  const uniqueFlows = useMemo(() => {
+    // Keep only the most recent entry per communication tuple.
+    const seen = new Set<string>();
+    const unique: FlowEntry[] = [];
+
+    for (let i = flowLog.length - 1; i >= 0; i -= 1) {
+      const f = flowLog[i];
+      const key = `${f.srcIP}|${f.dstIP}|${f.srcPort}|${f.dstPort}|${f.protocol}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      unique.push(f);
+    }
+
+    return unique.reverse();
+  }, [flowLog]);
+
+  const searched = useMemo(() => {
     const q = search.toLowerCase();
-    return flowLog.filter(f =>
+    return uniqueFlows.filter(f =>
       !q ||
       f.srcIP.includes(q) ||
       f.dstIP.includes(q) ||
       f.protocol.toLowerCase().includes(q)
     );
-  }, [flowLog, search]);
+  }, [uniqueFlows, search]);
+
+  const filtered = useMemo(() => {
+    return searched.filter((flow) => {
+      switch (activeFilter) {
+        case 'anomalous':
+          return flow.predictedLabel === 1;
+        case 'benign':
+          return flow.predictedLabel === 0;
+        case 'false_positives':
+          return flow.predictedLabel === 1 && flow.groundTruthLabel === 0;
+        default:
+          return true;
+      }
+    });
+  }, [searched, activeFilter]);
 
   const sorted = useMemo(() => {
     return [...filtered].sort((a, b) => {
@@ -42,6 +75,16 @@ export function FlowsPage() {
       return sortDir === 'asc' ? av - bv : bv - av;
     });
   }, [filtered, sortKey, sortDir]);
+
+  const filterCounts = useMemo(
+    () => ({
+      all: searched.length,
+      anomalous: searched.filter((f) => f.predictedLabel === 1).length,
+      benign: searched.filter((f) => f.predictedLabel === 0).length,
+      false_positives: searched.filter((f) => f.predictedLabel === 1 && f.groundTruthLabel === 0).length,
+    }),
+    [searched]
+  );
 
   const totalPages = Math.ceil(sorted.length / PAGE_SIZE);
   const paged = sorted.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
@@ -67,6 +110,8 @@ export function FlowsPage() {
     { label: 'BYTES',      key: 'byteCount',    width: '90px'  },
     { label: 'DUR(ms)',    key: 'duration',     width: '80px'  },
     { label: 'SCORE',      key: 'score',        width: '80px'  },
+    { label: 'GROUND TRUTH',                    width: '110px' },
+    { label: 'MATCH',                           width: '90px' },
   ];
 
   const gridCols = cols.map(c => c.width).join(' ');
@@ -110,6 +155,38 @@ export function FlowsPage() {
 
       {/* Table */}
       <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ padding: '10px 20px 0', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {([
+            ['all', 'All Flows'],
+            ['anomalous', 'Anomalous'],
+            ['benign', 'Benign'],
+            ['false_positives', 'False Positives'],
+          ] as [FlowFilter, string][]).map(([filter, label]) => (
+            <button
+              key={filter}
+              onClick={() => {
+                setActiveFilter(filter);
+                setPage(0);
+              }}
+              style={{
+                padding: '5px 10px',
+                borderRadius: 6,
+                border: `1px solid ${activeFilter === filter ? '#2563eb' : '#4b5563'}`,
+                background: activeFilter === filter ? '#1d4ed8' : '#1f2937',
+                color: activeFilter === filter ? '#fff' : '#9ca3af',
+                fontSize: 11,
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              {label}
+              <span style={{ marginLeft: 8, padding: '1px 5px', borderRadius: 999, background: '#374151', color: '#d1d5db' }}>
+                {filterCounts[filter]}
+              </span>
+            </button>
+          ))}
+        </div>
+
         {/* Column headers */}
         <div style={{
           display: 'grid', gridTemplateColumns: gridCols,
@@ -172,6 +249,24 @@ export function FlowsPage() {
                 fontSize: 11, fontFamily: 'monospace', fontWeight: f.isAnomaly ? 700 : 400,
               }}>
                 {f.score.toFixed(4)}
+              </span>
+              <span style={{ fontSize: 11 }}>
+                {f.groundTruthLabel !== null
+                  ? (
+                    <span style={{ color: f.groundTruthLabel === 1 ? '#f87171' : '#4ade80' }}>
+                      {f.groundTruthLabel === 1 ? 'Malicious' : 'Benign'}
+                    </span>
+                  )
+                  : <span style={{ color: '#6b7280' }}>-</span>}
+              </span>
+              <span style={{ fontSize: 11 }}>
+                {f.groundTruthLabel !== null
+                  ? (
+                    f.predictedLabel === f.groundTruthLabel
+                      ? <span style={{ color: '#4ade80' }}>Correct</span>
+                      : <span style={{ color: '#f87171', fontWeight: 700 }}>Wrong</span>
+                  )
+                  : <span style={{ color: '#6b7280' }}>-</span>}
               </span>
             </div>
           ))}

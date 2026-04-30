@@ -1,5 +1,5 @@
 export interface DataPoint {
-  id: number;
+  id: number | string;
   time: Date;
   timeLabel: string;
   score: number;
@@ -22,6 +22,7 @@ export type Protocol = 'TCP' | 'UDP' | 'ICMP' | 'HTTP' | 'HTTPS' | 'DNS';
 
 export interface FlowEntry {
   id: number;
+  flowId: string;
   timestamp: Date;
   srcIP: string;
   dstIP: string;
@@ -33,6 +34,9 @@ export interface FlowEntry {
   duration: number;
   score: number;
   isAnomaly: boolean;
+  predictedLabel: 0 | 1;
+  groundTruthLabel: 0 | 1 | null;
+  severity: 'low' | 'medium' | 'high' | 'critical';
   embX: number;
   embY: number;
 }

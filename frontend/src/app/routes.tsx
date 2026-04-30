@@ -8,6 +8,7 @@ import { FlowsPage } from './components/pages/FlowsPage';
 import { GraphPage } from './components/pages/GraphPage';
 import { LogsPage } from './components/pages/LogsPage';
 import { IngestionPage } from './components/pages/IngestionPage';
+import { PerformancePage } from './components/pages/PerformancePage';
 
 // Guard: redirect to /login if not authenticated
 function RequireAuth() {
@@ -39,7 +40,9 @@ export const router = createBrowserRouter([
           { path: 'alerts', Component: AlertsPage },
           { path: 'flows', Component: FlowsPage },
           { path: 'graph', Component: GraphPage },
+          { path: 'performance', Component: PerformancePage },
           { path: 'logs', Component: LogsPage },
+          { path: 'settings', Component: IngestionPage },
           { path: 'ingestion', Component: IngestionPage },
         ],
       },

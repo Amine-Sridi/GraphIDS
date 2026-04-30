@@ -1,10 +1,11 @@
 import { useEffect, useRef, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
-  ComposedChart, Area, BarChart, Bar,
+  ComposedChart, Area,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  ReferenceLine, ReferenceArea, Cell,
+  ReferenceLine, ReferenceArea,
 } from 'recharts';
+import { BarChart, Bar, Cell } from 'recharts';
 import {
   Activity, AlertTriangle, Shield, ShieldAlert,
   Radio, Database, Zap, Clock, TrendingUp, ChevronRight,
@@ -13,8 +14,12 @@ import type { DataPoint, AlertEntry, FlowEntry } from '../types';
 import { graphIdsApi, type DashboardStats } from '../utils/api';
 import { generateExplanation } from '../utils/explainability';
 import { ExplanationPanel } from './shared/ExplanationPanel';
+import { AttackTimeline } from './shared/AttackTimeline';
+import { TopTalkers } from './shared/TopTalkers';
+import { ProtocolBreakdown } from './shared/ProtocolBreakdown';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
+// Visual guide line for score charts only. Detection decisions come from backend labels.
 const THRESHOLD = 0.65;
 const CHART_WINDOW = 60;
 const UPDATE_INTERVAL = 1100;
@@ -47,7 +52,7 @@ const SeverityBadge = ({ severity }: { severity: AlertEntry['severity'] }) => {
 const TimeTooltip = ({ active, payload }: any) => {
   if (!active || !payload?.length) return null;
   const score = payload[0]?.value ?? 0;
-  const isAnomaly = score > THRESHOLD;
+  const isAnomaly = Boolean(payload[0]?.payload?.isAnomaly);
   return (
     <div style={{
       background: '#0d1117', border: `1px solid ${isAnomaly ? '#ef4444' : '#21262d'}`,
@@ -85,7 +90,7 @@ const HistTooltip = ({ active, payload }: any) => {
 // Fixed: no key on root element; return null for non-anomaly dots
 const AnomalyDot = (props: any) => {
   const { cx, cy, payload } = props;
-  if (!payload || payload.score <= THRESHOLD) return null;
+  if (!payload || !payload.isAnomaly) return <g />;
   return (
     <g>
       <circle cx={cx} cy={cy} r={5} fill="#ef4444" stroke="#f87171" strokeWidth={1.5} opacity={0.9} />
@@ -376,6 +381,137 @@ const MiniSparkline = ({ data }: { data: DataPoint[] }) => {
   );
 };
 
+// Custom dot component for anomaly markers
+const AnomalyMarker = (props: any) => {
+  const { cx, cy, payload } = props;
+  if (!payload || !payload.isAnomaly) return <g />;
+  return (
+    <g>
+      <circle cx={cx} cy={cy} r={5} fill="#ef4444" stroke="#f87171" strokeWidth={2} opacity={0.95} />
+      <circle cx={cx} cy={cy} r={8} fill="#ef4444" opacity={0.2} />
+    </g>
+  );
+};
+
+// ─── Heartbeat Chart ─────────────────────────────────────────────────────────
+// Discrete event visualization: renders aggregated heartbeat events as spikes
+// on a continuous line with anomaly markers (red dots)
+const HeartbeatChart = ({ data }: { data: DataPoint[] }) => {
+  // Create discrete heartbeat events
+  const heartbeatData = useMemo(() => {
+    return data.map((d, idx) => ({
+      idx,
+      timeLabel: d.timeLabel,
+      score: parseFloat(d.score.toFixed(4)),
+      isAnomaly: d.isAnomaly,
+    }));
+  }, [data]);
+
+  const maxIdx = Math.max(heartbeatData.length - 1, 1);
+
+  return (
+    <div style={{
+      flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column',
+      background: '#0d1117', padding: '12px 16px 8px',
+    }}>
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, flexShrink: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Activity size={14} color="#58a6ff" />
+          <span style={{ color: '#e6edf3', fontSize: 12, fontWeight: 600, letterSpacing: '0.05em' }}>
+            HEARTBEAT MONITOR — ANOMALY SPIKES
+          </span>
+          <div style={{
+            width: 6, height: 6, borderRadius: '50%', background: '#3fb950',
+            boxShadow: '0 0 6px #3fb950', animation: 'pulse 1.5s infinite',
+          }} />
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span style={{ color: '#7d8590', fontSize: 10, fontFamily: 'monospace' }}>
+            ANOMALIES: {heartbeatData.filter(d => d.isAnomaly).length}
+          </span>
+        </div>
+      </div>
+
+      {/* Heartbeat chart - discrete events */}
+      <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+        <div style={{ position: 'absolute', inset: 0 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <ComposedChart data={heartbeatData} margin={{ top: 10, right: 10, bottom: 0, left: 0 }}>
+              <defs>
+                <linearGradient id="heartbeatGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%"   stopColor="#3b82f6" stopOpacity={0.35} />
+                  <stop offset="60%"  stopColor="#3b82f6" stopOpacity={0.1}  />
+                  <stop offset="100%" stopColor="#3b82f6" stopOpacity={0.02} />
+                </linearGradient>
+              </defs>
+
+              <CartesianGrid strokeDasharray="3 3" stroke="#21262d" vertical={false} />
+
+              <XAxis
+                dataKey="idx"
+                type="number"
+                domain={[0, maxIdx]}
+                allowDataOverflow
+                tickCount={5}
+                tickFormatter={(val) => {
+                  const pt = heartbeatData[Math.round(val)];
+                  return pt?.timeLabel ?? '';
+                }}
+                tick={{ fill: '#4d5666', fontSize: 9, fontFamily: 'monospace' }}
+                axisLine={{ stroke: '#21262d' }}
+                tickLine={false}
+              />
+
+              <YAxis
+                domain={[0, 1]}
+                tick={{ fill: '#4d5666', fontSize: 9, fontFamily: 'monospace' }}
+                axisLine={false}
+                tickLine={false}
+                tickFormatter={(v) => v.toFixed(1)}
+                width={32}
+                label={{ value: 'INTENSITY', angle: -90, position: 'insideLeft', style: { fill: '#7d8590' } }}
+              />
+
+              <Tooltip content={<TimeTooltip />} />
+
+              {/* Anomaly threshold zone */}
+              <ReferenceArea y1={THRESHOLD} y2={1} fill="#ef4444" fillOpacity={0.04} />
+
+              {/* Baseline threshold line */}
+              <ReferenceLine
+                y={THRESHOLD}
+                stroke="#f97316"
+                strokeDasharray="5 3"
+                strokeWidth={1.5}
+                label={{
+                  value: `THRESHOLD ${THRESHOLD}`,
+                  position: 'insideTopRight',
+                  fill: '#f97316',
+                  fontSize: 10,
+                  fontFamily: 'monospace',
+                }}
+              />
+
+              {/* Continuous line with gradient fill and anomaly markers */}
+              <Area
+                type="monotone"
+                dataKey="score"
+                stroke="#3b82f6"
+                strokeWidth={2}
+                fill="url(#heartbeatGradient)"
+                dot={<AnomalyMarker />}
+                activeDot={{ r: 6, fill: '#58a6ff', stroke: '#fff', strokeWidth: 2 }}
+                isAnimationActive={false}
+              />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ─── Time Series Chart ────────────────────────────────────────────────────────
 // FIX: use numeric idx as XAxis dataKey to avoid duplicate-key warnings from
 //      repeated MM:SS timeLabel values in the 60-second sliding window.
@@ -499,12 +635,16 @@ const TimeSeriesChart = ({ data }: { data: DataPoint[] }) => {
 // FIX: switch to flexbox layout + position:absolute wrapper for ResponsiveContainer.
 const ScoreHistogram = ({ data }: { data: DataPoint[] }) => {
   const histData = useMemo(() => {
-    const bins = Array.from({ length: 10 }, (_, i) => ({
-      range: `${(i * 0.1).toFixed(1)}–${((i + 1) * 0.1).toFixed(1)}`,
-      rangeShort: `${(i * 0.1).toFixed(1)}`,
-      count: 0,
-      isAnomaly: i * 0.1 >= THRESHOLD,
-    }));
+    const bins = Array.from({ length: 10 }, (_, i) => {
+      const binStart = i * 0.1;
+      return {
+        range: `${binStart.toFixed(1)}–${((i + 1) * 0.1).toFixed(1)}`,
+        rangeShort: binStart.toFixed(1),
+        count: 0,
+        // Only mark as anomaly if bin is at or above threshold
+        isAnomaly: binStart >= THRESHOLD,
+      };
+    });
     data.forEach(d => {
       const bin = Math.min(9, Math.floor(d.score * 10));
       bins[bin].count++;
@@ -580,15 +720,28 @@ const ScoreHistogram = ({ data }: { data: DataPoint[] }) => {
 // ─── Alert Log ────────────────────────────────────────────────────────────────
 const AlertLog = ({ alerts, flowLog }: { alerts: AlertEntry[]; flowLog: FlowEntry[] }) => {
   const listRef = useRef<HTMLDivElement>(null);
+  
+  // Deduplicate alerts by flow ID, keeping only most recent
+  const uniqueAlerts = useMemo(() => {
+    const seenIds = new Set<number>();
+    const unique: AlertEntry[] = [];
+    for (const alert of alerts) {
+      if (!seenIds.has(alert.id)) {
+        seenIds.add(alert.id);
+        unique.push(alert);
+      }
+    }
+    return unique;
+  }, [alerts]);
 
   useEffect(() => {
     if (listRef.current) listRef.current.scrollTop = 0;
-  }, [alerts.length]);
+  }, [uniqueAlerts.length]);
 
   return (
     <div style={{
       width: 300, flexShrink: 0, background: '#0d1117', borderLeft: '1px solid #21262d',
-      display: 'flex', flexDirection: 'column', overflow: 'hidden',
+      display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0,
     }}>
       <div style={{
         padding: '10px 14px', borderBottom: '1px solid #21262d', flexShrink: 0,
@@ -602,15 +755,15 @@ const AlertLog = ({ alerts, flowLog }: { alerts: AlertEntry[]; flowLog: FlowEntr
         </div>
         <div style={{
           padding: '2px 6px', borderRadius: 3,
-          background: alerts.length > 0 ? 'rgba(248,81,73,0.15)' : 'rgba(255,255,255,0.05)',
-          border: `1px solid ${alerts.length > 0 ? 'rgba(248,81,73,0.3)' : '#21262d'}`,
-          color: alerts.length > 0 ? '#f85149' : '#7d8590', fontSize: 10, fontFamily: 'monospace',
+          background: uniqueAlerts.length > 0 ? 'rgba(248,81,73,0.15)' : 'rgba(255,255,255,0.05)',
+          border: `1px solid ${uniqueAlerts.length > 0 ? 'rgba(248,81,73,0.3)' : '#21262d'}`,
+          color: uniqueAlerts.length > 0 ? '#f85149' : '#7d8590', fontSize: 10, fontFamily: 'monospace',
         }}>
-          {alerts.length}
+          {uniqueAlerts.length}
         </div>
       </div>
 
-      {alerts.length === 0 ? (
+      {uniqueAlerts.length === 0 ? (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
           <Shield size={28} color="#21262d" />
           <span style={{ color: '#4d5666', fontSize: 11 }}>No anomalies detected</span>
@@ -618,9 +771,19 @@ const AlertLog = ({ alerts, flowLog }: { alerts: AlertEntry[]; flowLog: FlowEntr
       ) : (
         <div
           ref={listRef}
-          style={{ flex: 1, overflowY: 'auto', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 6 }}
+          style={{
+            flex: 1,
+            minHeight: 0,
+            overflowY: 'auto',
+            overflowX: 'hidden',
+            padding: '8px 10px',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'stretch',
+            gap: 6,
+          }}
         >
-          {alerts.map((alert) => {
+          {uniqueAlerts.map((alert) => {
             const flow = flowLog.find(f => f.id === alert.id);
             return <AlertCard key={alert.id} alert={alert} flow={flow} />;
           })}
@@ -643,6 +806,8 @@ const AlertCard = ({ alert, flow }: { alert: AlertEntry; flow?: FlowEntry }) => 
       background: 'rgba(255,255,255,0.02)', border: '1px solid #21262d',
       borderRadius: 6, overflow: 'hidden',
       borderLeft: `3px solid ${leftColor}`,
+      minHeight: 132,
+      flexShrink: 0,
     }}>
       {/* Main card content */}
       <div style={{ padding: '8px 10px' }}>
@@ -658,14 +823,40 @@ const AlertCard = ({ alert, flow }: { alert: AlertEntry; flow?: FlowEntry }) => 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginBottom: 5 }}>
           <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
             <span style={{ color: '#4d5666', fontSize: 9, width: 24 }}>SRC</span>
-            <span style={{ color: '#c9d1d9', fontSize: 10, fontFamily: 'monospace' }}>{alert.srcIP}</span>
+            <span
+              style={{
+                color: '#c9d1d9',
+                fontSize: 10,
+                fontFamily: 'monospace',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                minWidth: 0,
+              }}
+              title={alert.srcIP}
+            >
+              {alert.srcIP}
+            </span>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
             <ChevronRight size={10} color="#4d5666" style={{ marginLeft: 22 }} />
           </div>
           <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
             <span style={{ color: '#4d5666', fontSize: 9, width: 24 }}>DST</span>
-            <span style={{ color: '#c9d1d9', fontSize: 10, fontFamily: 'monospace' }}>{alert.dstIP}</span>
+            <span
+              style={{
+                color: '#c9d1d9',
+                fontSize: 10,
+                fontFamily: 'monospace',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                minWidth: 0,
+              }}
+              title={alert.dstIP}
+            >
+              {alert.dstIP}
+            </span>
           </div>
         </div>
         <div style={{
@@ -723,7 +914,17 @@ export function IDSDashboard() {
   // State for real backend data
   const [dataPoints, setDataPoints] = useState<DataPoint[]>([]);
   const [alerts, setAlerts] = useState<AlertEntry[]>([]);
+    const hashToNumericId = (rawId: string, fallback: number): number => {
+      let h = 0;
+      for (let i = 0; i < rawId.length; i += 1) {
+        h = ((h << 5) - h + rawId.charCodeAt(i)) | 0;
+      }
+      const v = Math.abs(h);
+      return Number.isFinite(v) && v > 0 ? v : fallback;
+    };
+
   const [flowLog, setFlowLog] = useState<FlowEntry[]>([]);
+  const [rawEvents, setRawEvents] = useState<any[]>([]);
   const [totalFlows, setTotalFlows] = useState(0);
   const [throughput, setThroughput] = useState(0);
   const [isActive, setIsActive] = useState(true);
@@ -739,12 +940,14 @@ export function IDSDashboard() {
         graphIdsApi.getStats(),
         graphIdsApi.getEvents(100),
       ]);
+      setRawEvents(eventsData);
 
       // Update dashboard stats
       setTotalFlows(statsData.total_flows_processed);
       setBackendStats(statsData);
 
-      // Transform backend events to frontend data types
+      // Transform backend events to frontend data types.
+      // Detection state must come from backend labels, not frontend score heuristics.
       const points: DataPoint[] = eventsData.map(event => ({
         id: event.flow_id,
         time: new Date(event.timestamp * 1000),
@@ -771,15 +974,11 @@ export function IDSDashboard() {
       const newAlerts: AlertEntry[] = points
         .filter(p => p.isAnomaly)
         .map((p, idx) => {
-          const score = p.score;
-          let severity: AlertEntry['severity'];
-          if (score >= 0.95) severity = 'critical';
-          else if (score >= 0.85) severity = 'high';
-          else if (score >= 0.75) severity = 'medium';
-          else severity = 'low';
+          const sourceEvent = eventsData.find((e) => e.flow_id === p.id);
+          const severity: AlertEntry['severity'] = sourceEvent?.severity ?? 'low';
 
           return {
-            id: parseInt(p.id.split('_')[1] || `${idx}`, 10),
+            id: hashToNumericId(String(p.id), idx + 1),
             timestamp: p.time,
             srcIP: p.srcIP || 'Unknown',
             dstIP: p.dstIP || 'Unknown',
@@ -794,6 +993,40 @@ export function IDSDashboard() {
         const unique = Array.from(new Map(combined.map(a => [a.id, a])).values());
         return unique.slice(0, 100); // Keep last 100 alerts
       });
+
+      const flowEntries: FlowEntry[] = eventsData.map((event, idx) => {
+        let protocol: 'TCP' | 'UDP' | 'ICMP' | 'HTTP' | 'HTTPS' | 'DNS' = 'TCP';
+        const proto = event.protocol ?? 6;
+        if (proto === 17) protocol = 'UDP';
+        else if (proto === 1) protocol = 'ICMP';
+        else if (proto === 6) {
+          if (event.src_port === 443 || event.dst_port === 443) protocol = 'HTTPS';
+          else if (event.src_port === 80 || event.dst_port === 80) protocol = 'HTTP';
+          else if (event.src_port === 53 || event.dst_port === 53) protocol = 'DNS';
+        }
+
+        return {
+          id: idx,
+          flowId: event.flow_id,
+          timestamp: new Date(event.timestamp * 1000),
+          srcIP: event.src_ip,
+          dstIP: event.dst_ip,
+          srcPort: event.src_port,
+          dstPort: event.dst_port,
+          protocol,
+          packetCount: event.packets ?? 0,
+          byteCount: event.bytes ?? 0,
+          duration: event.duration_ms ?? 0,
+          score: event.score,
+          isAnomaly: event.label === 1,
+          predictedLabel: event.label === 1 ? 1 : 0,
+          groundTruthLabel: event.ground_truth_label ?? null,
+          severity: event.severity ?? 'low',
+          embX: (Math.random() - 0.5) * 4,
+          embY: (Math.random() - 0.5) * 4,
+        };
+      });
+      setFlowLog(flowEntries);
 
       // Calculate statistics
       if (points.length > 0) {
@@ -915,9 +1148,27 @@ export function IDSDashboard() {
         />
 
         {/* Center: Charts */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
-          <TimeSeriesChart data={dataPoints} />
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflowY: 'auto' }}>
+          <HeartbeatChart data={dataPoints} />
           <ScoreHistogram data={dataPoints} />
+          <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <AttackTimeline threshold={backendStats?.retraining_threshold_fpr ?? 0.5} />
+            <TopTalkers
+              flows={rawEvents.map((e) => ({
+                src_ip: e.src_ip,
+                dst_ip: e.dst_ip,
+                dst_port: e.dst_port,
+                label: e.label,
+                score: e.score,
+              }))}
+            />
+            <ProtocolBreakdown
+              flows={rawEvents.map((e) => ({
+                protocol: e.protocol ?? 6,
+                label: e.label,
+              }))}
+            />
+          </div>
         </div>
 
         {/* Right: Alert Log — flowLog is passed so each card can look up its flow for explanation */}

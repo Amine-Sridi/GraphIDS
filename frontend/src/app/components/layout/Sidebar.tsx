@@ -1,29 +1,41 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router';
 import {
-  LayoutDashboard, AlertTriangle, Activity, Share2, Database,
-  Sliders, LogOut, ChevronLeft, ChevronRight, ShieldAlert, User, Shield,
+  Activity, Bell, List, TrendingUp, Settings,
+  LogOut, ChevronLeft, ChevronRight, ShieldAlert, User, Shield,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { useBackend } from '../../context/BackendContext';
+import { graphIdsApi } from '../../utils/api';
 
 const NAV_ITEMS = [
-  { path: '/', icon: LayoutDashboard, label: 'Dashboard', exact: true },
-  { path: '/alerts', icon: AlertTriangle, label: 'Alerts & Incidents' },
-  { path: '/flows', icon: Activity, label: 'Flow Inspection' },
-  { path: '/graph', icon: Share2, label: 'Graph View' },
-  { path: '/logs', icon: Database, label: 'Logs & DB' },
-  { path: '/ingestion', icon: Sliders, label: 'Ingestion Control' },
+  { path: '/', icon: Activity, label: 'Live Detection', exact: true },
+  { path: '/alerts', icon: Bell, label: 'Alerts' },
+  { path: '/flows', icon: List, label: 'Flow Inspector' },
+  { path: '/performance', icon: TrendingUp, label: 'Model Performance' },
+  { path: '/settings', icon: Settings, label: 'Settings' },
 ];
 
 export function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
+  const [alertActive, setAlertActive] = useState(false);
   const { user, logout } = useAuth();
-  const { alerts } = useBackend();
   const navigate = useNavigate();
-
-  const unackCount = alerts.filter(a => !a.acknowledged).length;
   const w = collapsed ? 64 : 220;
+
+  useEffect(() => {
+    const check = async () => {
+      try {
+        const status = await graphIdsApi.getAlertStatus();
+        setAlertActive(status.alert_active);
+      } catch {
+        // Keep last known indicator state when poll fails.
+      }
+    };
+
+    void check();
+    const interval = setInterval(check, 5000);
+    return () => clearInterval(interval);
+  }, []);
 
   const handleLogout = () => {
     logout();
@@ -129,15 +141,13 @@ export function Sidebar() {
                 <>
                   <div style={{ position: 'relative', flexShrink: 0 }}>
                     <Icon size={16} color={isActive ? '#58a6ff' : '#7d8590'} />
-                    {isAlerts && unackCount > 0 && (
+                    {isAlerts && alertActive && (
                       <div style={{
-                        position: 'absolute', top: -5, right: -6,
-                        width: 14, height: 14, borderRadius: '50%',
-                        background: '#f85149', color: '#fff',
-                        fontSize: 9, fontWeight: 700,
-                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        position: 'absolute', top: -2, right: -4,
+                        width: 8, height: 8, borderRadius: '50%',
+                        background: '#ef4444',
+                        boxShadow: '0 0 8px rgba(239,68,68,0.8)',
                       }}>
-                        {unackCount > 9 ? '9+' : unackCount}
                       </div>
                     )}
                   </div>
