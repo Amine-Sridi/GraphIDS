@@ -41,7 +41,7 @@ export function AttackTimeline({ threshold = 0.5 }: { threshold?: number }) {
     };
 
     void fetch();
-    const interval = setInterval(fetch, 3000);
+    const interval = setInterval(fetch, 1500);
     return () => clearInterval(interval);
   }, []);
 
@@ -75,8 +75,12 @@ export function AttackTimeline({ threshold = 0.5 }: { threshold?: number }) {
           <AreaChart data={data} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
             <defs>
               <linearGradient id="scoreGrad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
-                <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.4} />
+                <stop offset="95%" stopColor="#3b82f6" stopOpacity={0.05} />
+              </linearGradient>
+              <linearGradient id="anomalyGrad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="#ef4444" stopOpacity={0.3} />
+                <stop offset="95%" stopColor="#ef4444" stopOpacity={0} />
               </linearGradient>
             </defs>
             <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
@@ -104,13 +108,13 @@ export function AttackTimeline({ threshold = 0.5 }: { threshold?: number }) {
               }}
             />
             <Area
-              type="monotone"
+              type="linear"
               dataKey="score"
               stroke="#3b82f6"
-              strokeWidth={1.5}
+              strokeWidth={2}
               fill="url(#scoreGrad)"
               dot={<CustomDot />}
-              activeDot={{ r: 5, fill: '#60a5fa' }}
+              activeDot={{ r: 6, fill: '#60a5fa' }}
               isAnimationActive={false}
             />
           </AreaChart>

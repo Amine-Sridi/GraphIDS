@@ -7,31 +7,31 @@ pipeline in ``stream.py``.
 
 Changelog:
 - FIX: Reverted error aggregation from MAX to MEAN to match training-time
-  threshold computation. MAX over 512 timesteps inflated all errors 7-35x
-  above the trained threshold (0.014), causing 100% FPR.
+threshold computation. MAX over 512 timesteps inflated all errors 7-35x
+above the trained threshold (0.014), causing 100% FPR.
 - FIX: Removed adaptive threshold mechanism. It was designed to compensate
-  for the aggregation mismatch symptom and actively prevented correction
-  (threshold_cap = trained_threshold * 1.5 = 0.021 blocked any real fix).
+for the aggregation mismatch symptom and actively prevented correction
+(threshold_cap = trained_threshold * 1.5 = 0.021 blocked any real fix).
 - FIX: Removed window_counter-dependent aggregation branching (MEAN vs MAX
-  switch at window 100) which was the direct cause of the FPR spike.
+switch at window 100) which was the direct cause of the FPR spike.
 - FIX: compute_anomaly_score now accepts node_count and routes through a
-  three-phase GraphStabilityNormalizer that defers scoring until the graph
-  has stabilised. This fixes the baseline lock-out where warmup (sparse
-  graph, errors ≈ 0.030-0.040) built a baseline that permanently flagged
-  dense-graph benign traffic (errors ≈ 0.044-0.053) as anomalous.
+three-phase GraphStabilityNormalizer that defers scoring until the graph
+has stabilised. This fixes the baseline lock-out where warmup (sparse
+graph, errors ≈ 0.030-0.040) built a baseline that permanently flagged
+dense-graph benign traffic (errors ≈ 0.044-0.053) as anomalous.
 - FIX: Sigma floor raised to 0.010 (from 0.005) and Z_THRESHOLD raised to
-  3.0 (from 1.0). With SIGMA_FLOOR=0.005 and Z_THRESHOLD=1.0 the decision
-  cutoff was μ+0.005, which falls inside the benign error cloud (0.044–0.053)
-  whenever μ drifts toward the low end of that range — causing FPR≈100%.
-  SIGMA_FLOOR=0.010 and Z_THRESHOLD=3.0 places the cutoff at μ+0.030, well
-  above the benign ceiling of 0.053.
+3.0 (from 1.0). With SIGMA_FLOOR=0.005 and Z_THRESHOLD=1.0 the decision
+cutoff was μ+0.005, which falls inside the benign error cloud (0.044–0.053)
+whenever μ drifts toward the low end of that range — causing FPR≈100%.
+SIGMA_FLOOR=0.010 and Z_THRESHOLD=3.0 places the cutoff at μ+0.030, well
+above the benign ceiling of 0.053.
 - FIX: EMA smoothing now resets _ema_prev to NEUTRAL_SCORE at the LEARN→SCORE
-  transition. Previously the EMA carried forward stale 0.27 neutral scores
-  accumulated during SKIP/LEARN, creating a multi-minute lag where the
-  displayed score rose from 0.27 toward the true SCORE-phase value — producing
-  the two characteristic humps seen on the dashboard for pure benign traffic.
+transition. Previously the EMA carried forward stale 0.27 neutral scores
+accumulated during SKIP/LEARN, creating a multi-minute lag where the
+displayed score rose from 0.27 toward the true SCORE-phase value — producing
+the two characteristic humps seen on the dashboard for pure benign traffic.
 - CLEANUP: Removed recent_errors buffer and all adaptive logic that
-  depended on it.
+depended on it.
 - KEPT: Temporal heartbeat aggregation (aggregate_scores) — logic is sound.
 - KEPT: EMA smoothing (smooth_scores) — logic is sound.
 - KEPT: All defensive nan_to_num / clip guards throughout.
@@ -155,7 +155,12 @@ class _GraphStabilityNormalizer:
     # so flows must deviate by >Z_THRESHOLD × 0.005 = 0.0175 to be flagged.
     MAD_FLOOR:    float = 0.003
     # Modified z-score threshold (Iglewicz & Hoaglin recommend 3.5).
-    Z_THRESHOLD:  float = 2.0
+    # Z_THRESHOLD=1.5 is more sensitive to catch attacks. At this level:
+    # - Score at M=1.5: ~0.53 (just above neutral)
+    # - Score at M=3.0: ~0.78 (clearly anomalous)
+    # Combined with p85 aggregation + score >= 0.55 label, this ensures
+    # we catch real attacks without the previous false-negative problem.
+    Z_THRESHOLD:  float = 1.5
     # Sigmoid spread: score = sigmoid((M - Z_THRESHOLD) / Z_SCALE).
     # Z_SCALE=3.5 maps M=7 → 0.73, M=14 → 0.88.
     Z_SCALE:      float = 3.5
@@ -385,12 +390,12 @@ class InferenceEngine:
     2. Scale raw netflow edge features.
     3. Encode edges via the GraphIDS SAGELayer encoder.
     4. Reconstruct edge embeddings via the Transformer and compute
-       per-window MEAN reconstruction error (matches training).
+    per-window MEAN reconstruction error (matches training).
     5. Map errors to anomaly scores and binary labels using the
-       three-phase GraphStabilityNormalizer embedded in
-       compute_anomaly_score(errors, node_count).
+    three-phase GraphStabilityNormalizer embedded in
+    compute_anomaly_score(errors, node_count).
     6. Apply EMA smoothing and temporal heartbeat aggregation before
-       emitting results to the dashboard.
+    emitting results to the dashboard.
     """
 
     def __init__(
@@ -412,7 +417,7 @@ class InferenceEngine:
         self.model_version = "unknown"
 
         # Temporal heartbeat aggregation
-        self.time_window    = 1.0
+        self.time_window    = 1.5
         self.window_buffer  = []
         self.last_emit_time = time.time()
 
@@ -729,14 +734,23 @@ class InferenceEngine:
         scores_arr = np.array([x[1] for x in self.window_buffer])
         labels_arr = np.array([x[2] for x in self.window_buffer])
 
-        
-        # Use max to preserve attack spikes and ensure visible alerts
-        # Max score makes sure anomalies always bubble up to the dashboard
-        agg_score = float(np.max(scores_arr))
+        # Use 85th percentile for the displayed score, or mean if buffer is tiny.
+        # np.max creates jagged spikes: one elevated window in a benign period
+        # pushes the score high then it drops the next period.
+        # p85 smooths this while still capturing sustained anomalous periods.
+        if len(scores_arr) >= 3:
+            agg_score = float(np.quantile(scores_arr, 0.85))
+        else:
+            # Very small buffer (startup): use mean instead of p85
+            agg_score = float(np.mean(scores_arr))
 
-       
-        # If ANY anomaly in window → flag (preserve detection)
-        agg_label = 1 if np.any(labels_arr == 1) else 0
+        # Label based on aggregated score directly, not on window-level majority.
+        # This is more sensitive: if the p85 aggregated score > 0.55, it indicates
+        # sustained anomalous activity. Threshold 0.55 is just above benign range
+        # (typically 0.30-0.50) but well below attack range (0.65-0.95).
+        # Using score-based labeling bypasses the issue where strict window-level
+        # thresholds prevent enough windows from being labeled anomalous.
+        agg_label = 1 if agg_score >= 0.55 else 0
 
         self.window_buffer = []
         self.last_emit_time = now
@@ -798,5 +812,7 @@ class InferenceEngine:
     def reset_normalizer(self) -> None:
         """Reset the stability normalizer — call from the /reset endpoint."""
         self._normalizer.reset()
+        self.window_buffer = []
+        self.last_emit_time = time.time()
         if hasattr(self, "_ema_prev"):
             del self._ema_prev

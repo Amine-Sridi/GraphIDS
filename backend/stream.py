@@ -98,27 +98,27 @@ class RealtimeFlowBuffer:
         })
     
     def get_windows_for_batch(self) -> Tuple[List[np.ndarray], List[Tuple[int, int]]]:
-        """Get sequences ready for inference using sliding window."""
+        """Get sliding-window sequences ready for inference."""
         if len(self.embeddings) < self.window_size:
             return [], []
-        
+
         windows = []
         indices = []
-        
+
         num_full_windows = (len(self.embeddings) - self.window_size) // self.step_size
-        
+
         for i in range(num_full_windows + 1):
             start = i * self.step_size
             end = start + self.window_size
-            
+
             if end > len(self.embeddings):
                 break
-            
+
             emb_list = [self.embeddings[j] for j in range(start, end)]
             window = np.stack(emb_list, axis=0)
             windows.append(window)
             indices.append((start, end))
-        
+
         return windows, indices
     
     def clear(self):
