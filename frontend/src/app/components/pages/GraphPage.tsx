@@ -7,7 +7,7 @@ import {
 import { useBackend } from '../../context/BackendContext';
 import { graphIdsApi, type FlowSubgraph } from '../../utils/api';
 
-const THRESHOLD = 0.65;
+const THRESHOLD = 0.35;
 
 export function GraphPage() {
   const { flowLog } = useBackend();

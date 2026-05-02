@@ -19,7 +19,7 @@ interface TimelinePoint {
   time_label: string;
 }
 
-export function AttackTimeline({ threshold = 0.5 }: { threshold?: number }) {
+export function AttackTimeline({ threshold = 0.35 }: { threshold?: number }) {
   const [data, setData] = useState<TimelinePoint[]>([]);
 
   useEffect(() => {

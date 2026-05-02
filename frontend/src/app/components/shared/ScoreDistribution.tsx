@@ -17,7 +17,7 @@ interface Flow {
 
 export function ScoreDistribution({
   flows,
-  threshold = 0.5,
+  threshold = 0.35,
 }: {
   flows: Flow[];
   threshold?: number;

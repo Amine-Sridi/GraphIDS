@@ -4,7 +4,7 @@ import type { DataPoint, AlertEntry, FlowEntry, Protocol } from '../types';
 import { toast } from 'sonner';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-export const THRESHOLD = 0.65;
+export const THRESHOLD = 0.35;
 export const CHART_WINDOW = 60;
 const BASE_INTERVAL = 1100;
 const PROTOCOLS: Protocol[] = ['TCP', 'UDP', 'ICMP', 'HTTP', 'HTTPS', 'DNS'];

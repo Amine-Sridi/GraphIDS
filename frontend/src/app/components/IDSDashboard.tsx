@@ -20,7 +20,7 @@ import { ProtocolBreakdown } from './shared/ProtocolBreakdown';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 // Visual guide line for score charts only. Detection decisions come from backend labels.
-const THRESHOLD = 0.65;
+const THRESHOLD = 0.35;
 const CHART_WINDOW = 60;
 const UPDATE_INTERVAL = 1100;
 
@@ -1152,7 +1152,7 @@ export function IDSDashboard() {
           <HeartbeatChart data={dataPoints} />
           <ScoreHistogram data={dataPoints} />
           <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <AttackTimeline threshold={backendStats?.retraining_threshold_fpr ?? 0.5} />
+            <AttackTimeline threshold={backendStats?.retraining_threshold_fpr ?? 0.35} />
             <TopTalkers
               flows={rawEvents.map((e) => ({
                 src_ip: e.src_ip,
