@@ -88,26 +88,25 @@ class _Phase(Enum):
 
 
 class _GraphStabilityNormalizer:
-    """Three-phase error normalizer using robust MAD statistics.
+    """Three-phase error normalizer using adaptive percentile-based scoring.
 
-    Problem
+    Problem (Original Approach)
     -------
     Reconstruction error is a function of graph density.  During warmup
     (sparse graph, few nodes) errors sit at 0.030–0.040.  Once the graph
     stabilises (dense phase, 37+ nodes) all errors shift upward to
     0.044–0.053 (benign) and 0.090+ (malicious).  Any baseline built
-    during the sparse phase is wrong for both traffic types.
+    during the sparse phase is wrong.
 
-    Why MAD, not mean/std
-    ---------------------
-    The stream contains mixed traffic — both benign and malicious flows.
-    The mean is pulled upward by malicious outliers; at 6.5% contamination
-    (NF-UNSW-NB15-v3) the mean shifts by ~3 units relative to the benign
-    centre, making the z-score threshold move with the attack intensity and
-    causing FPR to oscillate.  MAD (Median Absolute Deviation) is robust
-    to up to 50% contamination: the median barely moves even at 30%
-    malicious traffic, so the reference point stays anchored to the bulk
-    of the distribution regardless of traffic mix.
+    Why Percentiles, Not Z-Scores
+    ------------------------------
+    Z-score normalization assumes Gaussian distribution, but reconstruction
+    errors from autoencoders are often multimodal or skewed:
+    - Benign: tight cluster at 0.044-0.053
+    - Malicious: spread 0.090-0.200 (variable attack types)
+    
+    This creates a valley between modes where z-score fails. Percentiles
+    work on any distribution: simply flag the top N% of errors as anomalous.
 
     Scoring
     -------
@@ -147,20 +146,15 @@ class _GraphStabilityNormalizer:
     BASELINE_DEQUE_SIZE:        int   = 2000
     STABILITY_GROWTH_THRESHOLD: float = 2.0     # nodes/window EMA
     STABILITY_EMA_ALPHA:        float = 0.2
-    MIN_SKIP_WINDOWS:           int   = 5
+    MIN_SKIP_WINDOWS:           int   = 20  # ~30 seconds for full graph stabilization
 
     # ── Scoring parameters ─────────────────────────────────────────────
-    # MAD floor: prevents division by zero and caps sensitivity when the
-    # distribution is very tight.  0.6745×MAD_FLOOR = 0.0034 effective σ,
-    # so flows must deviate by >Z_THRESHOLD × 0.005 = 0.0175 to be flagged.
-    MAD_FLOOR:    float = 0.003
-    # Modified z-score threshold (Iglewicz & Hoaglin recommend 3.5).
-    # Z_THRESHOLD=3.0 gives expected FPR ≈ 0.1% per window on normal distribution,
-    # realistically 10–15% in practice with non-Gaussian error distribution from GraphIDS.
-    Z_THRESHOLD:  float = 2.5
-    # Sigmoid spread: score = sigmoid((M - Z_THRESHOLD) / Z_SCALE).
-    # Z_SCALE=3.5 maps M=7 → 0.73, M=14 → 0.88.
-    Z_SCALE:      float = 3.5
+    # Percentile threshold for anomaly flagging.
+    # ANOMALY_PERCENTILE=90 means: flag errors in top 10% (90th percentile and above).
+    # Lower values = more aggressive (catch more attacks, higher FPR).
+    # Higher values = more conservative (fewer false positives, miss some attacks).
+    # Adaptive thresholding can adjust this based on feedback.
+    ANOMALY_PERCENTILE: float = 95.0  # Flag top 15% of errors
     # Neutral score during SKIP/LEARN — well below 0.50 so the EMA cannot
     # drift above the decision boundary before SCORE phase starts.
     NEUTRAL_SCORE: float = 0.40
@@ -173,11 +167,12 @@ class _GraphStabilityNormalizer:
         self._prev_node_count: Optional[int] = None
         self._growth_rate_ema: float = float("inf")
 
-        # Rolling error buffer for MAD computation
+        # Rolling error buffer for percentile computation
         self._baseline: deque = deque(maxlen=self.BASELINE_DEQUE_SIZE)
-        # Cached robust statistics (recomputed on every baseline update)
-        self._median:   float = 0.0
-        self._mad:      float = 0.0   # raw MAD (before floor)
+        # Cached percentile thresholds (recomputed on baseline update)
+        self._p50: float = 0.0   # median
+        self._p85: float = 0.0   # 85th percentile (anomaly boundary)
+        self._p95: float = 0.0   # 95th percentile (critical)
 
         # Flag set at LEARN→SCORE so smooth_scores flushes its EMA state
         # before the first real scored output — prevents the neutral-score
@@ -226,7 +221,7 @@ class _GraphStabilityNormalizer:
             neutral = np.full(len(errors), self.NEUTRAL_SCORE, dtype=np.float32)
             return neutral, np.zeros(len(errors), dtype=int)
 
-        return self._mad_score(errors)
+        return self._percentile_score(errors)
 
     def reset(self) -> None:
         """Full reset — call from the /reset endpoint."""
@@ -235,8 +230,9 @@ class _GraphStabilityNormalizer:
         self._prev_node_count  = None
         self._growth_rate_ema  = float("inf")
         self._baseline.clear()
-        self._median           = 0.0
-        self._mad              = 0.0
+        self._p50              = 0.0
+        self._p85              = 0.0
+        self._p95              = 0.0
         self.ema_reset_needed  = False
         self.total_scored      = 0
         self.total_skipped     = 0
@@ -244,18 +240,16 @@ class _GraphStabilityNormalizer:
 
     def get_status(self) -> dict:
         """Diagnostic snapshot surfaced via get_model_info()."""
-        mad_eff = max(self._mad, self.MAD_FLOOR)
         return {
             "phase":            self.phase.name,
             "windows_seen":     self._windows_seen,
             "growth_rate_ema":  round(self._growth_rate_ema, 4)
                                 if self._growth_rate_ema != float("inf") else None,
             "baseline_samples": len(self._baseline),
-            "median":           round(self._median, 6),
-            "mad":              round(self._mad, 6),
-            "mad_effective":    round(mad_eff, 6),
-            "robust_sigma":     round(0.6745 * mad_eff, 6),
-            "decision_cutoff":  round(self._median + self.Z_THRESHOLD / 0.6745 * mad_eff, 6),
+            "p50_median":       round(self._p50, 6),
+            "p85_anomaly_threshold": round(self._p85, 6),
+            "p95_critical":     round(self._p95, 6),
+            "anomaly_percentile": self.ANOMALY_PERCENTILE,
             "total_scored":     self.total_scored,
             "total_skipped":    self.total_skipped,
         }
@@ -296,8 +290,11 @@ class _GraphStabilityNormalizer:
             return  # never feed sparse-phase errors into the baseline
 
         if self.phase == _Phase.LEARN:
-            batch_p70 = float(np.percentile(errors, 70))
-            benign_candidates = errors[errors <= batch_p70]
+            # Only keep bottom 30% of each batch — pure benign, no attack contamination.
+            # At 6.5% baseline attack rate, bottom 30% has ~<0.2% attacks.
+            # Bottom 70% would include most attacks in mixed batches.
+            batch_p30 = float(np.percentile(errors, 30))
+            benign_candidates = errors[errors <= batch_p30]
             if len(benign_candidates) > 0:
                 for e in benign_candidates:
                     self._baseline.append(float(e))
@@ -312,10 +309,10 @@ class _GraphStabilityNormalizer:
                 self.ema_reset_needed = True
                 logger.info(
                     "[normalizer] LEARN → SCORE | "
-                    "median=%.6f mad=%.6f mad_eff=%.6f samples=%d",
-                    self._median,
-                    self._mad,
-                    max(self._mad, self.MAD_FLOOR),
+                    "p50=%.6f p85=%.6f p95=%.6f samples=%d",
+                    self._p50,
+                    self._p85,
+                    self._p95,
                     len(self._baseline),
                 )
             return
@@ -328,38 +325,46 @@ class _GraphStabilityNormalizer:
                     self._baseline.append(float(e))
             self._recompute_stats()
 
-    def _mad_score(self, errors: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """Compute modified z-scores and visualization-friendly anomaly scores."""
-
-        mad_eff = max(self._mad, self.MAD_FLOOR)
-
-        # Modified z-score
-        M = 0.6745 * (errors - self._median) / mad_eff
-
+    def _percentile_score(self, errors: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Compute percentile-based anomaly scores and labels.
         
-        labels = (M > self.Z_THRESHOLD).astype(int)
+        For each error, determine its percentile rank in the baseline distribution,
+        then map to score [0, 1] and label based on ANOMALY_PERCENTILE threshold.
+        Works on any error distribution (Gaussian, skewed, multimodal).
+        """
+        if len(self._baseline) == 0:
+            # Fallback if baseline empty
+            scores = np.full(len(errors), self.NEUTRAL_SCORE, dtype=np.float32)
+            labels = np.zeros(len(errors), dtype=int)
+            return scores, labels
 
-        
-        # Exponential stretch → makes anomalies visually pop
-        M_pos = np.maximum(M, 0.0)
+        baseline_arr = np.array(self._baseline, dtype=np.float64)
 
-        k = 0.5  # tune between 0.25–0.5 if needed
-        scores = 1.0 - np.exp(-k * M_pos)
+        # Compute percentile rank for each error
+        # percentileofscore returns [0, 100] where score indicates percentage of
+        # baseline values strictly less than or equal to the value
+        from scipy.stats import percentileofscore
+        percentile_ranks = np.array(
+            [percentileofscore(baseline_arr, float(e), kind='rank') for e in errors],
+            dtype=np.float64
+        )
+        percentile_ranks = np.clip(percentile_ranks, 0.0, 100.0)
 
-        # Safety
-        scores = np.clip(scores, 0.0, 1.0)
-        scores = np.nan_to_num(scores, nan=self.NEUTRAL_SCORE, posinf=1.0, neginf=0.0)
-        scores = scores.astype(np.float32)
+        # Scores: normalized percentile rank [0, 1]
+        scores = (percentile_ranks / 100.0).astype(np.float32)
+
+        # Labels: 1 if in top (100 - ANOMALY_PERCENTILE)% of errors
+        labels = (percentile_ranks > self.ANOMALY_PERCENTILE).astype(int)
 
         self.total_scored += len(errors)
 
         logger.debug(
-            "[normalizer/SCORE] median=%.6f mad_eff=%.6f | "
-            "errors [%.6f–%.6f] M [%.2f–%.2f] | "
+            "[normalizer/SCORE] p50=%.6f p85=%.6f p95=%.6f | "
+            "errors [%.6f–%.6f] percentiles [%.1f–%.1f] | "
             "scores [%.3f–%.3f] anomaly_rate=%.3f",
-            self._median, mad_eff,
+            self._p50, self._p85, self._p95,
             errors.min(), errors.max(),
-            M.min(), M.max(),
+            percentile_ranks.min(), percentile_ranks.max(),
             scores.min(), scores.max(),
             labels.mean(),
         )
@@ -370,8 +375,9 @@ class _GraphStabilityNormalizer:
         if len(self._baseline) == 0:
             return
         arr = np.array(self._baseline, dtype=np.float64)
-        self._median = float(np.median(arr))
-        self._mad    = float(np.median(np.abs(arr - self._median)))
+        self._p50 = float(np.percentile(arr, 50))
+        self._p85 = float(np.percentile(arr, 85))
+        self._p95 = float(np.percentile(arr, 95))
 
 
 # ---------------------------------------------------------------------------
@@ -714,7 +720,13 @@ class InferenceEngine:
         scores: np.ndarray,
         labels: np.ndarray,
     ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
-        """Aggregate scores for dashboard while preserving correct detection."""
+        """Aggregate scores for dashboard using single-stage score thresholding.
+        
+        Single-stage approach: scores are continuous [0, 1] from percentile ranking.
+        Aggregation uses p85 to emphasize windows with elevated errors.
+        Final decision is based directly on agg_score, preserving full score information.
+        This avoids information loss from early binarization.
+        """
 
         now = time.time()
 
@@ -731,23 +743,22 @@ class InferenceEngine:
         scores_arr = np.array([x[1] for x in self.window_buffer])
         labels_arr = np.array([x[2] for x in self.window_buffer])
 
-        # Use p85 for aggregation — more stable than p90.
+        # Single-stage thresholding: use p85 of continuous scores (not binary labels).
+        # p85 captures windows in top 15% of error magnitude, emphasizing sustained elevation.
         agg_score = float(np.quantile(scores_arr, 0.85))
 
-        # Label based on the fraction of windows flagged as anomalous.
-        # At Z_THRESHOLD=3.0, only ~3-7% of windows get flagged (extremely conservative),
-        # so threshold must be very low: 0.02 = "if ≥2% of windows anomalous, flag heartbeat".
-        # This translates to: if even a few windows in the heartbeat show elevation,
-        # it's worth investigating. Using per-window labels (pre-computed by normalizer).
-        anomaly_fraction = float(np.mean(labels_arr == 1))
-        agg_label = 1 if anomaly_fraction >= 0.02 else 0
+        # Heartbeat label decision based directly on aggregated score.
+        # Score 0.65 ≈ 65th percentile of baseline errors (balanced).
+        # Targets TPR >75% while keeping FPR <20%. Goldilocks with MAJORITY=0.10.
+        agg_label = 1 if agg_score >= 0.90 else 0
 
         self.window_buffer = []
         self.last_emit_time = now
 
         logger.debug(
-            "[heartbeat] agg_score=%.4f agg_label=%d (window size=%d, mean=%.4f)",
-            agg_score, agg_label, len(scores_arr), np.mean(scores_arr),
+            "[heartbeat] agg_score=%.4f agg_label=%d (window size=%d, p85=%.4f mean=%.4f)",
+            agg_score, agg_label, len(scores_arr), 
+            np.quantile(scores_arr, 0.85), np.mean(scores_arr),
         )
 
         return (

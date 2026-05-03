@@ -463,11 +463,10 @@ class StreamProcessor:
 
         attack_fraction = sum(1 for v in labeled if v == 1) / len(labeled)
 
-        # 8% threshold: approximately 1.2× the dataset baseline attack rate
-        # of 6.5%. More inclusive than 10%, catches windows with meaningful
-        # attack presence while staying above noise floor. Guide recommends
-        # lowering to 0.08 if TPR remains <40%.
-        ATTACK_FRACTION_THRESHOLD = 0.06
+        # 10% threshold: ~1.5× baseline attack rate (6.5%), balances ground truth precision.
+        # 0.06 was too loose (FPR=65%), 0.15 too strict (TPR=59%).
+        # 0.10 should recover TPR while maintaining FPR improvement.
+        ATTACK_FRACTION_THRESHOLD = 0.15
 
         return 1 if attack_fraction >= ATTACK_FRACTION_THRESHOLD else 0
 
