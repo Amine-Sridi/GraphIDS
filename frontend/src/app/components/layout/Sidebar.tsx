@@ -3,6 +3,7 @@ import { NavLink, useNavigate } from 'react-router';
 import {
   Activity, Bell, List, TrendingUp, Settings,
   LogOut, ChevronLeft, ChevronRight, ShieldAlert, User, Shield,
+  Play, Pause,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { graphIdsApi } from '../../utils/api';
@@ -18,6 +19,8 @@ const NAV_ITEMS = [
 export function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
   const [alertActive, setAlertActive] = useState(false);
+  const [streamActive, setStreamActive] = useState(true);
+  const [streamLoading, setStreamLoading] = useState(false);
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const w = collapsed ? 64 : 220;
@@ -37,9 +40,43 @@ export function Sidebar() {
     return () => clearInterval(interval);
   }, []);
 
+  useEffect(() => {
+    const checkStream = async () => {
+      try {
+        const status = await graphIdsApi.getStreamControl();
+        setStreamActive(status.is_active);
+      } catch {
+        // Keep last known stream state when poll fails
+      }
+    };
+
+    void checkStream();
+    const interval = setInterval(checkStream, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
   const handleLogout = () => {
     logout();
     navigate('/login');
+  };
+
+  const handleStreamToggle = async () => {
+    setStreamLoading(true);
+    try {
+      if (streamActive) {
+        // Stop the stream
+        await graphIdsApi.stopStream();
+        setStreamActive(false);
+      } else {
+        // Start the stream
+        await graphIdsApi.startStream();
+        setStreamActive(true);
+      }
+    } catch (error) {
+      console.error('Failed to toggle stream:', error);
+    } finally {
+      setStreamLoading(false);
+    }
   };
 
   return (
@@ -165,6 +202,71 @@ export function Sidebar() {
           );
         })}
       </nav>
+
+      {/* Capture Control */}
+      <div style={{
+        padding: collapsed ? '8px 0' : '8px 12px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 6,
+        borderBottom: '1px solid #21262d',
+      }}>
+        <div style={{
+          display: 'flex',
+          gap: 6,
+          justifyContent: collapsed ? 'center' : 'flex-start',
+        }}>
+          <button
+            onClick={handleStreamToggle}
+            disabled={streamLoading}
+            title={streamActive ? 'Stop Capture' : 'Start Capture'}
+            style={{
+              flex: collapsed ? 0 : 1,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 6,
+              padding: '6px 10px',
+              background: streamActive ? 'rgba(240,82,82,0.15)' : 'rgba(63,185,80,0.15)',
+              border: `1px solid ${streamActive ? 'rgba(240,82,82,0.3)' : 'rgba(63,185,80,0.3)'}`,
+              borderRadius: 4,
+              color: streamActive ? '#f05252' : '#3fb950',
+              cursor: streamLoading ? 'not-allowed' : 'pointer',
+              fontSize: 12,
+              fontWeight: 600,
+              transition: 'all 0.15s',
+              opacity: streamLoading ? 0.6 : 1,
+            }}
+            onMouseEnter={e => {
+              if (!streamLoading) {
+                (e.currentTarget as HTMLButtonElement).style.background = streamActive
+                  ? 'rgba(240,82,82,0.25)'
+                  : 'rgba(63,185,80,0.25)';
+              }
+            }}
+            onMouseLeave={e => {
+              if (!streamLoading) {
+                (e.currentTarget as HTMLButtonElement).style.background = streamActive
+                  ? 'rgba(240,82,82,0.15)'
+                  : 'rgba(63,185,80,0.15)';
+              }
+            }}
+          >
+            {streamActive ? <Pause size={14} /> : <Play size={14} />}
+            {!collapsed && (streamActive ? 'Stop' : 'Start')}
+          </button>
+        </div>
+        {!collapsed && (
+          <div style={{
+            fontSize: 10,
+            color: '#4d5666',
+            letterSpacing: '0.02em',
+            textAlign: 'center',
+          }}>
+            {streamLoading ? 'Updating...' : (streamActive ? 'Capturing' : 'Paused')}
+          </div>
+        )}
+      </div>
 
       {/* Divider */}
       <div style={{ height: 1, background: '#21262d', margin: '0 12px' }} />

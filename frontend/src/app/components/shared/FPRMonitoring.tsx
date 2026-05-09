@@ -109,9 +109,6 @@ const FPRTooltip = ({ active, payload }: any) => {
 export const FPRMonitoring = () => {
   const [data, setData] = useState<FPRDataPoint[]>([]);
   const [stats, setStats] = useState<DashboardStats | null>(null);
-  const [threshold, setThreshold] = useState<number | null>(null);
-  const [thresholdInput, setThresholdInput] = useState<string>('0.10');
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -151,43 +148,9 @@ export const FPRMonitoring = () => {
     }
   };
 
-  // Fetch retraining threshold
-  const fetchThreshold = async () => {
-    try {
-      const result = await graphIdsApi.getRetrainingThreshold();
-      if (result.threshold_fpr !== null) {
-        setThreshold(result.threshold_fpr);
-        setThresholdInput(result.threshold_fpr.toString());
-      }
-    } catch (err) {
-      console.error('Failed to fetch threshold:', err);
-    }
-  };
-
-  // Set new retraining threshold
-  const handleSetThreshold = async () => {
-    try {
-      setLoading(true);
-      const thresholdValue = parseFloat(thresholdInput);
-      if (isNaN(thresholdValue) || thresholdValue < 0 || thresholdValue > 1) {
-        setError('Threshold must be between 0 and 1');
-        return;
-      }
-      await graphIdsApi.setRetrainingThreshold(thresholdValue);
-      setThreshold(thresholdValue);
-      setError(null);
-    } catch (err) {
-      setError('Failed to set threshold');
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   // Initial fetch and setup polling
   useEffect(() => {
     fetchStats();
-    fetchThreshold();
 
     // Poll every 2 seconds
     pollIntervalRef.current = setInterval(() => {
@@ -201,9 +164,8 @@ export const FPRMonitoring = () => {
     };
   }, []);
 
-  // Determine if retraining is needed
-  const shouldShowAlert = stats && threshold !== null && stats.fpr > threshold;
-  const alertColor = shouldShowAlert ? 'red' : stats?.fpr ?? 0 > 0.15 ? 'yellow' : 'green';
+  // Determine color based on FPR value
+  const fprColor = (stats?.fpr ?? 0) > 0.15 ? 'yellow' : 'green';
 
   return (
     <div style={{ padding: '24px', background: '#0d1117', borderRadius: 8, border: '1px solid #21262d' }}>
@@ -254,9 +216,8 @@ export const FPRMonitoring = () => {
           label="False Positive Rate"
           value={(stats?.fpr ?? 0) * 100}
           unit="%"
-          color={alertColor}
-          alert={shouldShowAlert}
-          icon={shouldShowAlert ? <AlertTriangle size={16} /> : <Activity size={16} />}
+          color={fprColor}
+          icon={<Activity size={16} />}
         />
         <MetricCard
           label="Precision"
@@ -272,75 +233,6 @@ export const FPRMonitoring = () => {
           color="blue"
           icon={<Activity size={16} />}
         />
-      </div>
-
-      {/* FPR Threshold Configuration */}
-      <div
-        style={{
-          background: 'rgba(59, 130, 246, 0.05)',
-          border: '1px solid rgba(59, 130, 246, 0.2)',
-          borderRadius: 8,
-          padding: 16,
-          marginBottom: 24,
-        }}
-      >
-        <h3 style={{ fontSize: 14, fontWeight: 600, color: '#e6edf3', margin: '0 0 12px 0' }}>
-          Retraining Threshold Configuration
-        </h3>
-        <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-          <div style={{ flex: 1 }}>
-            <label style={{ display: 'block', fontSize: 12, color: '#7d8590', marginBottom: 6, fontWeight: 500 }}>
-              FPR Threshold (0.0 - 1.0)
-            </label>
-            <input
-              type="number"
-              min="0"
-              max="1"
-              step="0.01"
-              value={thresholdInput}
-              onChange={(e) => setThresholdInput(e.target.value)}
-              style={{
-                width: '100%',
-                padding: '8px 12px',
-                background: '#161b22',
-                border: '1px solid #30363d',
-                borderRadius: 4,
-                color: '#e6edf3',
-                fontSize: 13,
-                fontFamily: 'monospace',
-              }}
-            />
-          </div>
-          <button
-            onClick={handleSetThreshold}
-            disabled={loading}
-            style={{
-              padding: '8px 16px',
-              background: '#238636',
-              border: 'none',
-              borderRadius: 4,
-              color: '#ffffff',
-              fontSize: 12,
-              fontWeight: 600,
-              cursor: loading ? 'not-allowed' : 'pointer',
-              opacity: loading ? 0.6 : 1,
-              marginTop: 20,
-            }}
-          >
-            {loading ? 'Setting...' : 'Set Threshold'}
-          </button>
-        </div>
-        {threshold !== null && (
-          <div style={{ marginTop: 12, padding: '8px 12px', background: '#0d1117', borderRadius: 4 }}>
-            <div style={{ fontSize: 11, color: '#7d8590' }}>
-              Current threshold: <span style={{ color: '#58a6ff', fontWeight: 600 }}>{(threshold * 100).toFixed(2)}%</span>
-            </div>
-            <div style={{ fontSize: 11, color: shouldShowAlert ? '#f85149' : '#7d8590', marginTop: 4 }}>
-              {shouldShowAlert && '🚨 '}
-              Retraining: {shouldShowAlert ? '⚠️ NEEDED' : '✅ Not needed'}
-            </div>
-          </div>
-        )}
       </div>
 
       {/* FPR Historical Chart */}
@@ -360,11 +252,11 @@ export const FPRMonitoring = () => {
                 iconType="line"
               />
               <ReferenceLine
-                y={threshold ?? 0}
+                y={0.5}
                 stroke="#f97316"
                 strokeDasharray="5 5"
                 label={{
-                  value: `Threshold: ${threshold ? (threshold * 100).toFixed(1) : 'N/A'}%`,
+                  value: 'Threshold: 50%',
                   fill: '#f97316',
                   fontSize: 11,
                   position: 'topRight',

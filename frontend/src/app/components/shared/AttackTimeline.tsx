@@ -19,7 +19,7 @@ interface TimelinePoint {
   time_label: string;
 }
 
-export function AttackTimeline({ threshold = 0.35 }: { threshold?: number }) {
+export function AttackTimeline({ threshold = 0.5 }: { threshold?: number }) {
   const [data, setData] = useState<TimelinePoint[]>([]);
 
   useEffect(() => {
@@ -97,11 +97,11 @@ export function AttackTimeline({ threshold = 0.35 }: { threshold?: number }) {
               formatter={(value: number) => [`${(value * 100).toFixed(1)}%`, 'Anomaly Score']}
             />
             <ReferenceLine
-              y={threshold}
+              y={0.5}
               stroke="#f59e0b"
               strokeDasharray="4 4"
               label={{
-                value: `Threshold ${(threshold * 100).toFixed(0)}%`,
+                value: 'Threshold 50%',
                 fill: '#f59e0b',
                 fontSize: 10,
                 position: 'right',

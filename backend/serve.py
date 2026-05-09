@@ -1,687 +1,6 @@
-# """FastAPI server for GraphIDS real-time dashboard."""
 
-# import logging
-# import os
-# import sys
-# import yaml
-# from datetime import datetime
-# from pathlib import Path
-# from typing import Optional
-# from contextlib import asynccontextmanager
-# import time
 
-# from fastapi import FastAPI, HTTPException, Query
-# from fastapi.middleware.cors import CORSMiddleware
-# from fastapi.responses import JSONResponse
-# from pydantic_settings import BaseSettings
-
-# # Import custom modules
-# from models import (
-#     FlowBatchRequest, FlowBatchResponse, ClassificationResult,
-#     EventsRequest, DashboardStats, HealthResponse, ErrorResponse
-# )
-# from inference import InferenceEngine
-# from stream import StreamProcessor
-
-# # Configure logging (default to WARNING to reduce noise; can be overridden
-# # via LOG_LEVEL environment variable, e.g. LOG_LEVEL=INFO for debugging).
-# log_level_name = os.getenv("LOG_LEVEL", "WARNING").upper()
-# log_level = getattr(logging, log_level_name, logging.WARNING)
-
-# logging.basicConfig(
-#     level=log_level,
-#     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-# )
-# logger = logging.getLogger(__name__)
-
-
-# class Settings(BaseSettings):
-#     """Configuration settings from YAML."""
-    
-#     # Model
-#     model_checkpoint_path: str = "../../models/GraphIDS_NF-UNSW-NB15-v3_42.ckpt"
-#     model_scaler_path: str = "../../models/NF-UNSW-NB15-v3/scaler.pkl"
-#     model_device: str = "cuda"
-    
-#     # Streaming
-#     window_size: int = 32
-#     step_percent: float = 0.5
-#     buffer_size: int = 1000
-    
-#     # API
-#     api_host: str = "127.0.0.1"
-#     api_port: int = 8000
-#     api_workers: int = 1
-#     api_debug: bool = False
-    
-#     # Advanced
-#     recent_events_size: int = 500
-#     max_nodes: int = 100000
-    
-#     class Config:
-#         env_file = ".env"
-
-
-# def load_config(config_path: Optional[str] = None) -> dict:
-#     """Load configuration from YAML file."""
-#     if config_path is None:
-#         # Try to find config in common locations
-#         possible_paths = [
-#             Path("config_dashboard.yaml"),
-#             Path("../config_dashboard.yaml"),
-#             Path("../../config_dashboard.yaml"),
-#         ]
-#         for p in possible_paths:
-#             if p.exists():
-#                 config_path = str(p)
-#                 break
-    
-#     if config_path and Path(config_path).exists():
-#         with open(config_path, "r") as f:
-#             config = yaml.safe_load(f)
-#         logger.info(f"Loaded config from {config_path}")
-#         return config
-#     else:
-#         logger.warning("No config file found; using defaults")
-#         return {}
-
-
-# # Global state
-# app = None
-# inference_engine: Optional[InferenceEngine] = None
-# stream_processor: Optional[StreamProcessor] = None
-# start_time: Optional[float] = None
-# request_count: int = 0
-# error_count: int = 0
-# stream_control: dict = {
-#     "is_active": True,
-#     "ingestion_rate": 1.0,
-#     "updated_at": 0.0,
-# }
-
-
-# @asynccontextmanager
-# async def lifespan(app: FastAPI):
-#     """Lifespan context manager for startup/shutdown."""
-#     global inference_engine, stream_processor, start_time, request_count, error_count, stream_control
-    
-#     start_time = time.time()
-#     request_count = 0
-#     error_count = 0
-#     stream_control = {
-#         "is_active": True,
-#         "ingestion_rate": 1.0,
-#         "updated_at": start_time,
-#     }
-    
-#     # Load config
-#     config = load_config()
-#     # Load default settings (can be overridden by config)
-#     settings = Settings()
-    
-#     # Extract model config
-#     model_config = config.get("model", {})
-#     model_checkpoint = model_config.get("checkpoint_path", settings.model_checkpoint_path)
-#     model_scaler = model_config.get("scaler_path", settings.model_scaler_path)
-#     model_device = model_config.get("device", settings.model_device)
-    
-#     # Make paths relative to the project root (GraphIDS repo), not just the
-#     # dashboard folder. This ensures we reuse the same checkpoints and
-#     # scaler generated during training under the main project.
-#     repo_root = Path(__file__).resolve().parents[2]
-#     if not Path(model_checkpoint).is_absolute():
-#         model_checkpoint = str(repo_root / model_checkpoint)
-#     if not Path(model_scaler).is_absolute():
-#         model_scaler = str(repo_root / model_scaler)
-    
-#     try:
-#         logger.info("Initializing inference engine...")
-#         inference_engine = InferenceEngine(
-#             checkpoint_path=model_checkpoint,
-#             scaler_path=model_scaler,
-#             device=model_device,
-#             model_config=model_config,
-#         )
-#         logger.info("✓ Inference engine loaded")
-        
-#         # Initialize stream processor
-#         streaming_config = config.get("streaming", {})
-#         window_size = streaming_config.get("window_size", 32)
-#         step_percent = streaming_config.get("step_percent", 0.5)
-#         buffer_size = streaming_config.get("buffer_size", 1000)
-        
-#         logger.info("Initializing stream processor...")
-#         stream_processor = StreamProcessor(
-#             inference_engine=inference_engine,
-#             window_size=window_size,
-#             step_percent=step_percent,
-#             buffer_size=buffer_size,
-#         )
-#         logger.info("✓ Stream processor initialized")
-        
-#     except Exception as e:
-#         logger.error(f"Failed to initialize: {e}", exc_info=True)
-#         raise
-    
-#     yield
-    
-#     # Cleanup
-#     logger.info("Shutting down...")
-
-
-# # Create FastAPI app
-# app = FastAPI(
-#     title="GraphIDS Real-Time Dashboard API",
-#     description="API for real-time IDS using GraphIDS model",
-#     version="1.0.0",
-#     lifespan=lifespan,
-# )
-
-# # Add CORS middleware
-# app.add_middleware(
-#     CORSMiddleware,
-#     allow_origins=["*"],
-#     allow_credentials=True,
-#     allow_methods=["*"],
-#     allow_headers=["*"],
-# )
-
-
-# # ============================================================================
-# # API Endpoints
-# # ============================================================================
-
-# @app.get("/health", response_model=HealthResponse, tags=["System"])
-# async def health_check() -> HealthResponse:
-#     """Health check endpoint."""
-#     global inference_engine, stream_processor
-    
-#     status = "healthy"
-#     message = ""
-    
-#     if inference_engine is None or not inference_engine.is_loaded:
-#         status = "degraded"
-#         message = "Inference engine not loaded"
-    
-#     if stream_processor is None:
-#         status = "degraded"
-#         message = "Stream processor not initialized"
-    
-#     return HealthResponse(
-#         status=status,
-#         model_loaded=inference_engine is not None and inference_engine.is_loaded,
-#         scaler_loaded=inference_engine is not None and inference_engine.scaler is not None,
-#         message=message,
-#     )
-
-
-# @app.post("/classify", response_model=FlowBatchResponse, tags=["Inference"])
-# async def classify_flows(request: FlowBatchRequest) -> FlowBatchResponse:
-#     """
-#     Classify a batch of flows.
-    
-#     Takes raw NetFlow records and returns classification results
-#     with anomaly scores and labels.
-#     """
-#     global stream_processor, request_count, error_count
-    
-#     request_count += 1
-    
-#     if stream_processor is None:
-#         error_count += 1
-#         raise HTTPException(
-#             status_code=503,
-#             detail="Stream processor not initialized",
-#         )
-    
-#     try:
-#         import time
-#         start = time.time()
-        
-#         # Process flows
-#         results = stream_processor.process_flows(request.flows)
-        
-#         processing_time = (time.time() - start) * 1000
-        
-#         return FlowBatchResponse(
-#             classifications=results,
-#             batch_id=f"batch_{request_count}",
-#             processed_count=len(request.flows),
-#             error_count=0,
-#             total_time_ms=processing_time,
-#             model_version=inference_engine.model_version if inference_engine else "unknown",
-#         )
-    
-#     except Exception as e:
-#         error_count += 1
-#         logger.error(f"Classification error: {e}", exc_info=True)
-#         raise HTTPException(
-#             status_code=500,
-#             detail=f"Classification failed: {str(e)}",
-#         )
-
-
-# @app.get("/events", response_model=list[ClassificationResult], tags=["Monitoring"])
-# async def get_recent_events(
-#     limit: int = Query(50, ge=1, le=1000),
-#     min_score: float = Query(0.0, ge=0.0, le=1.0),
-#     label: Optional[int] = Query(None, ge=0, le=1),
-# ) -> list[ClassificationResult]:
-#     """
-#     Get recent classification events.
-    
-#     Query parameters:
-#     - limit: Number of events to return (default 50)
-#     - min_score: Filter by minimum anomaly score
-#     - label: Filter by label (0=benign, 1=anomalous)
-#     """
-#     global stream_processor
-    
-#     if stream_processor is None:
-#         raise HTTPException(status_code=503, detail="Stream processor not initialized")
-    
-#     try:
-#         events = stream_processor.get_recent_events(
-#             limit=limit,
-#             min_score=min_score,
-#             label_filter=label,
-#         )
-#         return events
-#     except Exception as e:
-#         logger.error(f"Error retrieving events: {e}", exc_info=True)
-#         raise HTTPException(status_code=500, detail=str(e))
-
-
-# @app.get("/stats", response_model=DashboardStats, tags=["Monitoring"])
-# async def get_statistics() -> DashboardStats:
-#     """Get dashboard statistics."""
-#     global stream_processor, start_time
-    
-#     if stream_processor is None:
-#         raise HTTPException(status_code=503, detail="Stream processor not initialized")
-    
-#     try:
-#         stats = stream_processor.get_stats()
-        
-#         uptime = (time.time() - start_time) if start_time else 0
-        
-#         return DashboardStats(
-#             total_flows_processed=stats["total_flows_processed"],
-#             total_anomalies_detected=stats["total_anomalies_detected"],
-#             anomaly_rate=stats["anomaly_rate"],
-#             avg_anomaly_score=stats["avg_anomaly_score"],
-#             current_window_id=stats["current_window_id"],
-#             model_version=inference_engine.model_version if inference_engine else "unknown",
-#             uptime_seconds=uptime,
-#             node_count=stats["node_count"],
-#             buffer_size=stats["buffer_size"],
-#             true_positives=stats["true_positives"],
-#             false_positives=stats["false_positives"],
-#             true_negatives=stats["true_negatives"],
-#             false_negatives=stats["false_negatives"],
-#             fpr=stats["fpr"],
-#             tpr=stats["tpr"],
-#             precision=stats["precision"],
-#             f1_score=stats["f1_score"],
-#             retraining_threshold_fpr=stats["retraining_threshold_fpr"],
-#             should_retrain=stats["should_retrain"],
-#             windowed_fpr=stats["windowed_fpr"],
-#             windowed_tpr=stats["windowed_tpr"],
-#             windowed_precision=stats["windowed_precision"],
-#             windowed_f1=stats["windowed_f1"],
-#             windowed_window_sec=stats["windowed_window_sec"],
-#             windowed_event_count=stats["windowed_event_count"],
-#             alert_active=stats["alert_active"],
-#             alert_triggered_at=stats["alert_triggered_at"],
-#             alert_fpr_value=stats["alert_fpr_value"],
-#             alert_threshold=stats["alert_threshold"],
-#         )
-#     except Exception as e:
-#         logger.error(f"Error retrieving stats: {e}", exc_info=True)
-#         raise HTTPException(status_code=500, detail=str(e))
-
-
-# @app.get("/model-info", tags=["System"])
-# async def get_model_info() -> dict:
-#     """Get model metadata and configuration."""
-#     global inference_engine
-    
-#     if inference_engine is None:
-#         raise HTTPException(status_code=503, detail="Inference engine not initialized")
-    
-#     return inference_engine.get_model_info()
-
-
-# @app.post("/retraining-threshold", tags=["Configuration"])
-# async def set_retraining_threshold(threshold_fpr: float = Query(..., ge=0.0, le=1.0, description="FPR threshold for retraining")) -> dict:
-#     """
-#     Set the FPR (False Positive Rate) threshold for triggering retraining.
-    
-#     When the FPR exceeds this threshold, the dashboard will flag that retraining is recommended.
-    
-#     Query parameters:
-#     - threshold_fpr: FPR value (0.0 to 1.0) above which retraining is recommended
-#     """
-#     global stream_processor
-    
-#     if stream_processor is None:
-#         raise HTTPException(status_code=503, detail="Stream processor not initialized")
-    
-#     try:
-#         stream_processor.set_retraining_threshold(threshold_fpr)
-#         return {
-#             "status": "success",
-#             "message": f"Retraining threshold FPR set to {threshold_fpr}",
-#             "threshold_fpr": threshold_fpr,
-#         }
-#     except ValueError as e:
-#         raise HTTPException(status_code=400, detail=str(e))
-#     except Exception as e:
-#         logger.error(f"Error setting retraining threshold: {e}", exc_info=True)
-#         raise HTTPException(status_code=500, detail=str(e))
-
-
-# @app.get("/retraining-threshold", tags=["Configuration"])
-# async def get_retraining_threshold() -> dict:
-#     """Get the current retraining threshold FPR."""
-#     global stream_processor
-    
-#     if stream_processor is None:
-#         raise HTTPException(status_code=503, detail="Stream processor not initialized")
-    
-#     return {
-#         "threshold_fpr": stream_processor.retraining_threshold_fpr,
-#         "is_set": stream_processor.retraining_threshold_fpr is not None,
-#     }
-
-
-# @app.get("/alert", tags=["Monitoring"])
-# async def get_alert_status() -> dict:
-#     """Get current retraining alert status for dashboard polling."""
-#     global stream_processor
-
-#     if stream_processor is None:
-#         raise HTTPException(status_code=503, detail="Stream processor not initialized")
-
-#     windowed = stream_processor.get_windowed_stats()
-
-#     return {
-#         "alert_active": stream_processor._alert_active,
-#         "alert_triggered_at": stream_processor._alert_triggered_at,
-#         "alert_fpr_value": stream_processor._alert_fpr_value,
-#         "alert_threshold": stream_processor._alert_threshold,
-#         "windowed_fpr": windowed["fpr"],
-#         "windowed_stats": windowed,
-#         "message": (
-#             stream_processor._alert_history[-1]["message"]
-#             if stream_processor._alert_active and stream_processor._alert_history
-#             else None
-#         ),
-#         "recent_alerts": [
-#             {
-#                 "alert_id": a["alert_id"],
-#                 "triggered_at": a["triggered_at"],
-#                 "windowed_fpr": a["windowed_fpr"],
-#                 "threshold": a["threshold"],
-#             }
-#             for a in list(stream_processor._alert_history)[-10:]
-#         ],
-#     }
-
-
-# @app.post("/alert/acknowledge", tags=["Monitoring"])
-# async def acknowledge_alert() -> dict:
-#     """Acknowledge and clear the active retraining alert."""
-#     global stream_processor
-
-#     if stream_processor is None:
-#         raise HTTPException(status_code=503, detail="Stream processor not initialized")
-
-#     was_active = stream_processor.acknowledge_alert()
-
-#     if was_active:
-#         return {
-#             "status": "acknowledged",
-#             "message": "Alert acknowledged. System will re-alert if FPR rises again.",
-#         }
-
-#     return {
-#         "status": "no_active_alert",
-#         "message": "No active alert to acknowledge.",
-#     }
-
-
-# @app.post("/alert/threshold", tags=["Monitoring"])
-# async def set_alert_threshold(
-#     threshold_fpr: float = Query(..., ge=0.0, le=1.0),
-#     window_sec: int = Query(300, ge=60, le=3600),
-# ) -> dict:
-#     """Set alert threshold and rolling window duration."""
-#     global stream_processor
-
-#     if stream_processor is None:
-#         raise HTTPException(status_code=503, detail="Stream processor not initialized")
-
-#     stream_processor.set_retraining_threshold(threshold_fpr)
-#     stream_processor._fpr_window_sec = window_sec
-
-#     return {
-#         "status": "set",
-#         "threshold_fpr": threshold_fpr,
-#         "window_sec": window_sec,
-#         "message": (
-#             f"Alert will fire when windowed FPR exceeds {threshold_fpr:.2%} "
-#             f"over any {window_sec}s window."
-#         ),
-#     }
-
-
-# @app.get("/subgraph/{flow_id}", tags=["Visualization"])
-# async def get_flow_subgraph(flow_id: str) -> dict:
-#     """
-#     Return a 2-hop neighborhood graph centered on the source/destination
-#     IPs of the specified anomalous flow.
-#     """
-#     global stream_processor
-
-#     if stream_processor is None:
-#         raise HTTPException(status_code=503, detail="Stream processor not initialized")
-
-#     target_flow = None
-#     for event in stream_processor.recent_events:
-#         if event.flow_id == flow_id:
-#             target_flow = event
-#             break
-
-#     if target_flow is None:
-#         raise HTTPException(status_code=404, detail=f"Flow {flow_id} not found")
-
-#     center_ips = {target_flow.src_ip, target_flow.dst_ip}
-#     nodes = {}
-#     edges = []
-
-#     for meta in stream_processor.buffer.flow_metadata:
-#         src = meta["src_ip"]
-#         dst = meta["dst_ip"]
-
-#         if src in center_ips or dst in center_ips:
-#             nodes[src] = nodes.get(src, {"id": src, "label": src, "hop": 1})
-#             nodes[dst] = nodes.get(dst, {"id": dst, "label": dst, "hop": 1})
-#             edges.append(
-#                 {
-#                     "source": src,
-#                     "target": dst,
-#                     "ground_truth": meta.get("ground_truth_label"),
-#                 }
-#             )
-
-#     for ip in center_ips:
-#         if ip in nodes:
-#             nodes[ip]["hop"] = 0
-#             nodes[ip]["is_center"] = True
-
-#     return {
-#         "flow_id": flow_id,
-#         "center_ips": list(center_ips),
-#         "nodes": list(nodes.values()),
-#         "edges": edges[:200],
-#         "node_count": len(nodes),
-#         "edge_count": len(edges),
-#     }
-
-
-# @app.get("/metrics", tags=["System"])
-# async def get_metrics() -> dict:
-#     """Get API metrics and health indicators."""
-#     global request_count, error_count
-    
-#     uptime = (time.time() - start_time) if start_time else 0
-    
-#     return {
-#         "uptime_seconds": uptime,
-#         "total_requests": request_count,
-#         "total_errors": error_count,
-#         "error_rate": error_count / max(request_count, 1),
-#     }
-
-
-# @app.get("/stream-control", tags=["Configuration"])
-# async def get_stream_control() -> dict:
-#     """Get current stream control state used by the external streamer."""
-#     global stream_control
-#     return {
-#         "is_active": bool(stream_control.get("is_active", True)),
-#         "ingestion_rate": float(stream_control.get("ingestion_rate", 1.0)),
-#         "updated_at": float(stream_control.get("updated_at", time.time())),
-#     }
-
-
-# @app.post("/stream-control", tags=["Configuration"])
-# async def update_stream_control(
-#     is_active: Optional[bool] = Query(None, description="Whether streaming is active"),
-#     ingestion_rate: Optional[float] = Query(None, ge=0.25, le=4.0, description="Streaming speed multiplier"),
-# ) -> dict:
-#     """Update stream control state for the dataset streamer process."""
-#     global stream_control
-
-#     if is_active is None and ingestion_rate is None:
-#         raise HTTPException(
-#             status_code=400,
-#             detail="At least one of 'is_active' or 'ingestion_rate' must be provided",
-#         )
-
-#     if is_active is not None:
-#         stream_control["is_active"] = bool(is_active)
-#     if ingestion_rate is not None:
-#         stream_control["ingestion_rate"] = float(ingestion_rate)
-
-#     stream_control["updated_at"] = time.time()
-
-#     return {
-#         "status": "success",
-#         "is_active": bool(stream_control["is_active"]),
-#         "ingestion_rate": float(stream_control["ingestion_rate"]),
-#         "updated_at": float(stream_control["updated_at"]),
-#     }
-
-
-# @app.post("/reset", tags=["System"])
-# async def reset_processor() -> dict:
-#     """Reset the stream processor (clear buffers, reset counters)."""
-#     global stream_processor
-    
-#     if stream_processor is None:
-#         raise HTTPException(status_code=503, detail="Stream processor not initialized")
-    
-#     try:
-#         stream_processor.buffer.clear()
-#         stream_processor.total_flows = 0
-#         stream_processor.total_anomalies = 0
-#         stream_processor.recent_events.clear()
-        
-#         # Reset performance metrics
-#         stream_processor.true_positives = 0
-#         stream_processor.false_positives = 0
-#         stream_processor.true_negatives = 0
-#         stream_processor.false_negatives = 0
-#         stream_processor.has_ground_truth = False
-
-#         # Reset windowed tracking and alert state
-#         stream_processor._windowed_events.clear()
-#         stream_processor._alert_active = False
-#         stream_processor._alert_triggered_at = None
-#         stream_processor._alert_fpr_value = None
-#         stream_processor._alert_threshold = None
-#         stream_processor._alert_history.clear()
-
-#         # Inference engine state 
-#         inference_engine.window_counter = 0
-#         inference_engine.recent_errors.clear()
-#         inference_engine.window_buffer = []
-#         inference_engine.last_emit_time = time.time()
-
-        
-#         return {"status": "reset", "message": "Stream processor reset successfully"}
-#     except Exception as e:
-#         logger.error(f"Error resetting processor: {e}", exc_info=True)
-#         raise HTTPException(status_code=500, detail=str(e))
-
-
-# @app.exception_handler(Exception)
-# async def global_exception_handler(request, exc):
-#     """Global exception handler for unhandled errors."""
-#     global error_count
-#     error_count += 1
-    
-#     logger.error(f"Unhandled exception: {exc}", exc_info=True)
-    
-#     return JSONResponse(
-#         status_code=500,
-#         content={
-#             "detail": "Internal server error",
-#             "error_code": "INTERNAL_ERROR",
-#             "timestamp": datetime.utcnow().isoformat(),
-#         }
-#     )
-
-
-# if __name__ == "__main__":
-#     import uvicorn
-    
-#     config = load_config()
-#     api_config = config.get("api", {})
-    
-#     host = api_config.get("host", "127.0.0.1")
-#     port = api_config.get("port", 8000)
-#     debug = api_config.get("debug", False)
-#     workers = api_config.get("workers", 1)
-    
-#     logger.info(f"Starting server on {host}:{port}")
-    
-#     uvicorn.run(
-#         "serve:app",
-#         host=host,
-#         port=port,
-#         reload=debug,
-#         workers=workers,
-#         log_level="info",
-#     )
-
-"""FastAPI server for GraphIDS real-time dashboard.
-
-Changelog (rewrite):
-- FIX: window_size default corrected from 32 → 512 in both Settings and the
-  StreamProcessor constructor call, matching the trained model.
-- FIX: /reset endpoint no longer touches inference_engine.window_counter or
-  inference_engine.recent_errors (both removed in inference.py rewrite).
-  Instead resets only the fields that still exist: window_buffer,
-  last_emit_time, and the EMA state (_ema_prev).
-- FIX: /stats now maps stats["total_heartbeats"] → DashboardStats.current_window_id
-  so the API contract is preserved without breaking the frontend.
-- FIX: model_device default changed from hardcoded "cuda" to the same
-  device-detection logic used in InferenceEngine ("cuda" if available else "cpu").
-- KEPT: All endpoints, CORS, lifespan, alert/threshold/subgraph/metrics routes.
-"""
+"""FastAPI server for GraphIDS real-time dashboard."""
 
 import logging
 import os
@@ -692,6 +11,7 @@ from pathlib import Path
 from typing import Optional
 from contextlib import asynccontextmanager
 import time
+import subprocess
 
 import torch
 from fastapi import FastAPI, HTTPException, Query
@@ -924,6 +244,7 @@ stream_control: dict = {
     "ingestion_rate": 1.0,
     "updated_at": 0.0,
 }
+stream_process = None  # subprocess.Popen for stream_from_dataset.py
 
 
 # ---------------------------------------------------------------------------
@@ -967,6 +288,7 @@ async def lifespan(app: FastAPI):
             device=model_device,
             model_config=model_config,
         )
+        inference_engine._trained_threshold = inference_engine.threshold
         logger.info("✓ Inference engine loaded (threshold=%.6f)", inference_engine.threshold)
     except Exception as e:
         logger.error("Failed to initialize inference engine: %s", e, exc_info=True)
@@ -999,8 +321,8 @@ async def lifespan(app: FastAPI):
         )
         logger.info("✓ Stream processor initialized")
 
-        # Pre-warm the buffer with benign flows
-        await _prewarm_buffer(PREWARM_CSV_PATH, n_flows=600)
+        # Pre-warm disabled for tests — incoming stream will fill buffer naturally.
+        logger.info("Pre-warm disabled: not seeding buffer; streaming will fill buffer on demand.")
 
     except Exception as e:
         logger.error("Failed to initialize stream processor: %s", e, exc_info=True)
@@ -1160,7 +482,9 @@ async def get_model_info() -> dict:
     """Return model metadata and configuration."""
     if inference_engine is None:
         raise HTTPException(status_code=503, detail="Inference engine not initialized")
-    return inference_engine.get_model_info()
+    info = inference_engine.get_model_info()
+    info["calibration_phase"] = stream_processor.calibrator._phase
+    return info
 
 
 @app.post("/retraining-threshold", tags=["Configuration"])
@@ -1411,18 +735,85 @@ async def reset_processor() -> dict:
         inference_engine.last_emit_time = time.time()
         inference_engine.reset_normalizer()   # resets SKIP/LEARN/SCORE + EMA
 
-        # Re-warm the buffer after reset so the dashboard does not go blank again
-        import asyncio
-        asyncio.create_task(_prewarm_buffer(PREWARM_CSV_PATH, n_flows=600))
+        stream_processor.calibrator.reset()
+        if hasattr(inference_engine, '_sigmoid_scale'):
+             del inference_engine._sigmoid_scale
+        if hasattr(inference_engine, '_trained_threshold'):
+             inference_engine.threshold = inference_engine._trained_threshold
+
 
         return {
             "status": "reset",
-            "message": "Stream processor reset successfully. Buffer pre-warming in background.",
+            "message": "Stream processor reset successfully. Pre-warm disabled.",
         }
 
     except Exception as e:
         logger.error("Error resetting processor: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/stream/start", tags=["System"])
+async def start_stream() -> dict:
+    """Start the streaming process (python stream_from_dataset.py --no-warmup)."""
+    global stream_process
+
+    if stream_process is not None and stream_process.poll() is None:
+        return {
+            "status": "already_running",
+            "message": "Streaming process is already running.",
+            "pid": stream_process.pid,
+        }
+
+    try:
+        # Start the streaming subprocess without the stale phase-aware gate.
+        # The new inference contract no longer exposes a normalizer phase,
+        # so the streamer must not wait for SCORE that can never arrive.
+        stream_process = subprocess.Popen(
+            ["python", "stream_from_dataset.py", "--no-warmup"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        
+        logger.info("Started streaming process with PID %d (no-warmup only)", stream_process.pid)
+        return {
+            "status": "started",
+            "message": "Streaming process started successfully (no-warmup only).",
+            "pid": stream_process.pid,
+        }
+    except Exception as e:
+        logger.error("Failed to start streaming process: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to start stream: {str(e)}")
+
+
+@app.post("/stream/stop", tags=["System"])
+async def stop_stream() -> dict:
+    """Stop the streaming process."""
+    global stream_process
+
+    if stream_process is None or stream_process.poll() is not None:
+        return {
+            "status": "not_running",
+            "message": "Streaming process is not running.",
+        }
+
+    try:
+        # Terminate the streaming subprocess
+        stream_process.terminate()
+        try:
+            stream_process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            stream_process.kill()
+            stream_process.wait()
+        
+        logger.info("Stopped streaming process")
+        stream_process = None
+        return {
+            "status": "stopped",
+            "message": "Streaming process stopped successfully.",
+        }
+    except Exception as e:
+        logger.error("Failed to stop streaming process: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to stop stream: {str(e)}")
 
 
 # ---------------------------------------------------------------------------

@@ -20,7 +20,7 @@ import { ProtocolBreakdown } from './shared/ProtocolBreakdown';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 // Visual guide line for score charts only. Detection decisions come from backend labels.
-const THRESHOLD = 0.35;
+const THRESHOLD = 0.5;
 const CHART_WINDOW = 60;
 const UPDATE_INTERVAL = 1100;
 
@@ -419,7 +419,7 @@ const HeartbeatChart = ({ data }: { data: DataPoint[] }) => {
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <Activity size={14} color="#58a6ff" />
           <span style={{ color: '#e6edf3', fontSize: 12, fontWeight: 600, letterSpacing: '0.05em' }}>
-            HEARTBEAT MONITOR — ANOMALY SPIKES
+            ANOMALY DETECTION
           </span>
           <div style={{
             width: 6, height: 6, borderRadius: '50%', background: '#3fb950',
@@ -641,8 +641,8 @@ const ScoreHistogram = ({ data }: { data: DataPoint[] }) => {
         range: `${binStart.toFixed(1)}–${((i + 1) * 0.1).toFixed(1)}`,
         rangeShort: binStart.toFixed(1),
         count: 0,
-        // Only mark as anomaly if bin is at or above threshold
-        isAnomaly: binStart >= THRESHOLD,
+        // Mark as anomaly if bin is at or above 0.5
+        isAnomaly: binStart >= 0.5,
       };
     });
     data.forEach(d => {
@@ -932,6 +932,9 @@ export function IDSDashboard() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [backendStats, setBackendStats] = useState<DashboardStats | null>(null);
+  
+  // Track previous total flows for throughput calculation
+  const previousStatsRef = useRef<{ totalFlows: number; timestampMs: number } | null>(null);
 
   // Fetch data from backend
   const fetchData = async () => {
@@ -1039,11 +1042,15 @@ export function IDSDashboard() {
         setStats({ avg, peak, anomalyCount, benignCount, total: recent.length });
       }
 
-      // Estimate throughput (flows per second)
-      if (eventsData.length > 0) {
-        const avgProcessingTime = eventsData.reduce((a, b) => a + b.processing_time_ms, 0) / eventsData.length;
-        setThroughput(eventsData.length / 2); // Approximate (polls every 2 seconds)
+      // Calculate throughput based on delta of total flows (matches BackendContext)
+      const nowMs = Date.now();
+      const previous = previousStatsRef.current;
+      if (previous) {
+        const deltaFlows = Math.max(0, statsData.total_flows_processed - previous.totalFlows);
+        const deltaSeconds = Math.max(0.001, (nowMs - previous.timestampMs) / 1000);
+        setThroughput(deltaFlows / deltaSeconds);
       }
+      previousStatsRef.current = { totalFlows: statsData.total_flows_processed, timestampMs: nowMs };
 
       setError(null);
       setIsLoading(false);
@@ -1131,7 +1138,7 @@ export function IDSDashboard() {
         isActive={isActive}
         throughput={throughput}
         totalFlows={totalFlows}
-        anomalyCount={alerts.length}
+        anomalyCount={backendStats?.total_anomalies_detected ?? 0}
         onToggle={toggleActive}
       />
 
@@ -1152,11 +1159,12 @@ export function IDSDashboard() {
           <HeartbeatChart data={dataPoints} />
           <ScoreHistogram data={dataPoints} />
           <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <AttackTimeline threshold={backendStats?.retraining_threshold_fpr ?? 0.35} />
+            <AttackTimeline threshold={0.5} />
             <TopTalkers
               flows={rawEvents.map((e) => ({
                 src_ip: e.src_ip,
                 dst_ip: e.dst_ip,
+                src_port: e.src_port,
                 dst_port: e.dst_port,
                 label: e.label,
                 score: e.score,

@@ -58,7 +58,7 @@ export function ProtocolBreakdown({ flows }: { flows: Flow[] }) {
               ))}
             </Pie>
             <Tooltip
-              contentStyle={{ background: '#111827', border: '1px solid #374151' }}
+              contentStyle={{ background: '#111827', border: '1px solid #374151', color: '#e5e7eb' }}
               formatter={(value: number, name: string) => [`${value} alerts`, name]}
             />
             <Legend

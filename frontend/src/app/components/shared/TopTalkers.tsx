@@ -3,6 +3,7 @@ import { useMemo } from 'react';
 interface Flow {
   src_ip: string;
   dst_ip: string;
+  src_port: number;
   dst_port: number;
   label: number;
   score: number;
@@ -17,16 +18,17 @@ interface TalkerEntry {
 
 function computeTopSources(flows: Flow[], limit = 5): TalkerEntry[] {
   const anomalous = flows.filter((f) => f.label === 1);
-  const counts: Record<string, { count: number; max_score: number }> = {};
+  const counts: Record<string, { count: number; max_score: number; port: number }> = {};
 
   for (const f of anomalous) {
-    if (!counts[f.src_ip]) counts[f.src_ip] = { count: 0, max_score: 0 };
-    counts[f.src_ip].count += 1;
-    counts[f.src_ip].max_score = Math.max(counts[f.src_ip].max_score, f.score);
+    const key = `${f.src_ip}:${f.src_port}`;
+    if (!counts[key]) counts[key] = { count: 0, max_score: 0, port: f.src_port };
+    counts[key].count += 1;
+    counts[key].max_score = Math.max(counts[key].max_score, f.score);
   }
 
   return Object.entries(counts)
-    .map(([ip, { count, max_score }]) => ({ ip, count, max_score }))
+    .map(([ip, { count, max_score, port }]) => ({ ip: ip.split(':')[0], count, max_score, port }))
     .sort((a, b) => b.count - a.count)
     .slice(0, limit);
 }
@@ -54,7 +56,7 @@ export function TopTalkers({ flows }: { flows: Flow[] }) {
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
-      <TalkerTable title="Top Anomalous Sources" rows={sources} showPort={false} />
+      <TalkerTable title="Top Anomalous Sources" rows={sources} showPort={true} />
       <TalkerTable title="Top Targeted Destinations" rows={targets} showPort={true} />
     </div>
   );

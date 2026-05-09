@@ -118,8 +118,6 @@ export function IngestionPage() {
               type="range" min={0.25} max={4} step={0.25}
               value={ingestionRate}
               onChange={e => void setIngestionRate(parseFloat(e.target.value))}
-              disabled
-              title="Not available in demo mode"
               style={{ flex: 1, accentColor: '#58a6ff', height: 4 }}
             />
             <div style={{
@@ -137,16 +135,14 @@ export function IngestionPage() {
               <button
                 key={r}
                 onClick={() => void setIngestionRate(r)}
-                disabled
-                title="Not available in demo mode"
                 style={{
                   flex: 1, padding: '6px 0', borderRadius: 5,
                   background: ingestionRate === r ? 'rgba(88,166,255,0.15)' : 'rgba(255,255,255,0.04)',
                   border: `1px solid ${ingestionRate === r ? 'rgba(88,166,255,0.35)' : '#21262d'}`,
                   color: ingestionRate === r ? '#58a6ff' : '#7d8590',
                   fontSize: 11,
-                  cursor: 'not-allowed',
-                  opacity: 0.45,
+                  cursor: 'pointer',
+                  opacity: 1,
                   fontWeight: ingestionRate === r ? 700 : 400,
                 }}
               >

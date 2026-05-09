@@ -4,7 +4,7 @@ import type { DataPoint, AlertEntry, FlowEntry, Protocol } from '../types';
 import { toast } from 'sonner';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-export const THRESHOLD = 0.35;
+export const THRESHOLD = 0.5;
 export const CHART_WINDOW = 60;
 const BASE_INTERVAL = 1100;
 const PROTOCOLS: Protocol[] = ['TCP', 'UDP', 'ICMP', 'HTTP', 'HTTPS', 'DNS'];
@@ -29,7 +29,7 @@ export const formatDate = (d: Date) =>
 
 export const getSeverity = (score: number): AlertEntry['severity'] => {
   if (score >= 0.95) return 'critical';
-  if (score >= 0.85) return 'high';
+  if (score >= 0.5) return 'high';
   if (score >= 0.75) return 'medium';
   return 'low';
 };

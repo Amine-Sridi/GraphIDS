@@ -80,20 +80,6 @@ export function SessionHeader() {
       )}
 
       <StatItem
-        label="Flows Processed"
-        value={stats ? stats.total_flows_processed.toLocaleString() : '-'}
-      />
-      <StatItem
-        label="Anomalies Detected"
-        value={stats ? stats.total_anomalies_detected.toLocaleString() : '-'}
-        highlight={stats ? stats.total_anomalies_detected > 0 : false}
-      />
-      <StatItem
-        label="FPR (5 min)"
-        value={stats ? `${(stats.windowed_fpr * 100).toFixed(2)}%` : '-'}
-        highlight={stats ? stats.windowed_fpr > 0.05 : false}
-      />
-      <StatItem
         label="Uptime"
         value={stats ? formatUptime(stats.uptime_seconds) : '-'}
       />

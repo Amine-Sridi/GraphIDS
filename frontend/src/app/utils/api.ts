@@ -408,6 +408,22 @@ export const graphIdsApi = {
     }
     return response.json();
   },
+
+  async startStream(): Promise<{ status: string; message: string; pid?: number }> {
+    const response = await fetchWithTimeout(`${API_BASE_URL}/stream/start`, { method: 'POST' });
+    if (!response.ok) {
+      throw new Error(`Failed to start stream: ${response.status}`);
+    }
+    return response.json();
+  },
+
+  async stopStream(): Promise<{ status: string; message: string }> {
+    const response = await fetchWithTimeout(`${API_BASE_URL}/stream/stop`, { method: 'POST' });
+    if (!response.ok) {
+      throw new Error(`Failed to stop stream: ${response.status}`);
+    }
+    return response.json();
+  },
 };
 
 /**
