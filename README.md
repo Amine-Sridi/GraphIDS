@@ -1,8 +1,8 @@
 # GraphIDS Real-Time Dashboard - Integrated Project
 
-A production-ready real-time network intrusion detection dashboard powered by **GraphIDS**, a self-supervised Graph Neural Network model for anomaly detection in NetFlow data.
+A real-time network intrusion detection dashboard powered by **GraphIDS**, a self-supervised Graph Neural Network model for anomaly detection in NetFlow data.
 
-## 📁 Project Structure
+##  Project Structure
 
 ```
 project/
@@ -33,7 +33,7 @@ project/
 └── README.md             # This file
 ```
 
-## 🚀 Quick Start
+##  Quick Start
 
 ### Prerequisites
 
@@ -121,7 +121,7 @@ python serve.py    # Start with default settings
 LOG_LEVEL=DEBUG python serve.py
 ```
 
-## 📊 Key Features
+##  Key Features
 
 ### Frontend
 - **Real-time Dashboard**: Live statistics and anomaly visualization
@@ -142,19 +142,6 @@ LOG_LEVEL=DEBUG python serve.py
 
 ## ⚙️ Configuration
 
-### Environment Variables
-
-Create a `.env` file in the project root (template provided in `.env.example`):
-
-```env
-# Frontend API endpoint
-VITE_API_BASE_URL=http://localhost:8000
-
-# Backend settings (if modifying)
-BACKEND_HOST=localhost
-BACKEND_PORT=8000
-BACKEND_LOG_LEVEL=WARNING
-```
 
 ### Model Configuration
 
@@ -167,58 +154,5 @@ model_scaler_path = "/path/to/NF-UNSW-NB15-v3/scaler.pkl"
 
 ## 📚 Documentation
 
-- **[Backend Overview](backend/README.md)** - Detailed backend architecture
-- **[Backend Implementation](backend/ARCHITECTURE.md)** - Technical implementation details
-- **[Frontend Architecture](frontend/README.md)** - Frontend structure and components
-- **[Backend Testing Guide](backend/TESTING.md)** - Testing procedures
+- Self-Supervised Learning of Graph Representations for Network Intrusion Detection(https://github.com/lorenzo9uerra/GraphIDS)
 
-## 🧪 Testing
-
-### Test the API Endpoints
-
-```bash
-# Health check
-curl http://localhost:8000/health
-
-# Get dashboard stats
-curl http://localhost:8000/stats
-
-# Get recent events
-curl http://localhost:8000/events?limit=10
-```
-
-### Test Frontend Integration
-
-1. Ensure backend is running on `http://localhost:8000`
-2. Start frontend with `npm run dev`
-3. Login with credentials:
-   - Username: `admin`
-   - Password: `NetGuard@2025`
-4. View real-time dashboard
-
-## 🔐 Security
-
-- **Authentication**: Session-based with 30-minute timeout
-- **CORS**: Configured for frontend-backend communication
-- **Model Safety**: Input validation and error handling
-- **Logging**: Comprehensive audit logging (configurable level)
-
-## 🤝 Contributing
-
-For development guidelines, see [Guidelines](guidelines/Guidelines.md)
-
-## 📄 License
-
-See LICENSE file in the project root
-
-## 📞 Support
-
-For issues or questions:
-1. Check the backend testing guide: `backend/TESTING.md`
-2. Review available documentation in respective folders
-3. Check logs for error messages
-
----
-
-**Last Updated**: April 2026  
-**Status**: Production Ready ✓
