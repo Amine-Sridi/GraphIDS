@@ -1,6 +1,10 @@
-# GraphIDS Real-Time Dashboard - Integrated Project
+# GraphIDS Real-Time Dashboard 
 
 A real-time network intrusion detection dashboard powered by **GraphIDS**, a self-supervised Graph Neural Network model for anomaly detection in NetFlow data.
+
+## Report
+[rapport_pfa2_.pdf](https://github.com/user-attachments/files/32143800/rapport_pfa2_.pdf)
+
 
 ## Demo 
 
