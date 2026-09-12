@@ -2,6 +2,12 @@
 
 A real-time network intrusion detection dashboard powered by **GraphIDS**, a self-supervised Graph Neural Network model for anomaly detection in NetFlow data.
 
+## Demo 
+
+
+https://github.com/user-attachments/assets/1ba199bd-5820-40a2-b6ce-8f270e6ef5c9
+
+
 ##  Project Structure
 
 ```
